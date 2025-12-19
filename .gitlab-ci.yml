@@ -16,7 +16,7 @@ build-indexer:
   image: docker:25.0.2-git
   variables:
     DOCKER_DRIVER: overlay2
-    REGISTRY_IMAGE: $CI_APPLICATION_REPOSITORY/rust-indexer
+    REGISTRY_IMAGE: $CI_APPLICATION_REPOSITORY/governance-indexer
     DOCKER_FILE: Dockerfile
   before_script:
   - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
