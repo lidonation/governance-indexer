@@ -6,6 +6,11 @@ variables:
 stages:
   - build
 
+services:
+- name: docker:dind
+  alias: docker
+  command: [ "--tls=false" ]
+
 build-indexer:
   stage: build
   image: docker:25.0.2-git
