@@ -1,7 +1,7 @@
 variables:
-  AUTO_DEPLOY_IMAGE_VERSION: v2.50.0
   DOCKER_TLS_CERTDIR: ""
   DOCKER_HOST: tcp://docker:2375/
+  DOCKER_DRIVER: overlay2
 
 stages:
   - build
