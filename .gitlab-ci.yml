@@ -8,7 +8,7 @@ stages:
 
 build-indexer:
   stage: build
-  image: docker:latest
+  image: docker:25.0.2-git
   services:
     - docker:dind
   variables:
