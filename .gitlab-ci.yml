@@ -4,7 +4,7 @@ variables:
   DOCKER_DRIVER: overlay2
 
 stages:
-  - build
+- build
 
 services:
 - name: docker:dind
@@ -19,11 +19,19 @@ build-indexer:
     REGISTRY_IMAGE: $CI_APPLICATION_REPOSITORY/rust-indexer
     DOCKER_FILE: Dockerfile
   before_script:
-    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
+  - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
   script:
-    - echo "Building indexer image..."
-    - docker build -t $REGISTRY_IMAGE:latest -f $DOCKER_FILE .
-    - echo "Pushing image to registry..."
-    - docker push $REGISTRY_IMAGE:latest
+  - |
+    echo "Building indexer image..."
+
+    docker build -t $REGISTRY_IMAGE:latest -f $DOCKER_FILE .
+
+    docker build --network host -f $DOCKER_FILE \ 
+      -t "$REGISTRY_IMAGE:$CI_PIPELINE_ID" \ 
+      -t "$REGISTRY_IMAGE:latest" .
+
+    echo "Pushing image to registry..."
+    docker push $REGISTRY_IMAGE:$CI_PIPELINE_ID
+    docker push $REGISTRY_IMAGE:latest
   only:
-    - main
+  - main
