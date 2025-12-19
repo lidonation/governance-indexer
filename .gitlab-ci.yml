@@ -16,7 +16,7 @@ build-indexer:
   image: docker:25.0.2-git
   variables:
     DOCKER_DRIVER: overlay2
-    REGISTRY_IMAGE: $CI_APPLICATION_REPOSITORY/governance-indexer
+    REGISTRY_IMAGE: registry.2lovelaces.io/voltaire/governance-indexer
     DOCKER_FILE: Dockerfile
   before_script:
   - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
@@ -24,14 +24,12 @@ build-indexer:
   - |
     echo "Building indexer image..."
 
-    docker build -t $REGISTRY_IMAGE:latest -f $DOCKER_FILE .
-
-    docker build --network host -f $DOCKER_FILE \ 
-      -t "$REGISTRY_IMAGE:$CI_PIPELINE_ID" \ 
+    docker build --network host -f $DOCKER_FILE \
+      -t "$REGISTRY_IMAGE:$CI_PIPELINE_ID" \
       -t "$REGISTRY_IMAGE:latest" .
 
     echo "Pushing image to registry..."
-    docker push $REGISTRY_IMAGE:$CI_PIPELINE_ID
-    docker push $REGISTRY_IMAGE:latest
+    docker push "$REGISTRY_IMAGE:$CI_PIPELINE_ID"
+    docker push "$REGISTRY_IMAGE:latest"
   only:
   - main
