@@ -1,0 +1,43 @@
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: governance-indexer-db
+    environment:
+      POSTGRES_USER: govindex
+      POSTGRES_PASSWORD: govindex
+      POSTGRES_DB: govindex
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U govindex"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - governance-network
+
+  # Rust Indexer Application
+  indexer:
+    image: registry.2lovelaces.io/voltaire/www.1694.io/rust-indexer:latest
+    container_name: governance-indexer-app
+    environment:
+      DATABASE_URL: postgres://govindex:govindex@postgres:5432/govindex
+      RUST_LOG: info
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - governance-network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  governance-network:
+    driver: bridge

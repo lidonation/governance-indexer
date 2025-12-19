@@ -1,0 +1,26 @@
+variables:
+  AUTO_DEPLOY_IMAGE_VERSION: v2.50.0
+  DOCKER_TLS_CERTDIR: ""
+  DOCKER_HOST: tcp://docker:2375/
+
+stages:
+  - build
+
+build-indexer:
+  stage: build
+  image: docker:latest
+  services:
+    - docker:dind
+  variables:
+    DOCKER_DRIVER: overlay2
+    REGISTRY_IMAGE: $CI_APPLICATION_REPOSITORY/rust-indexer
+    DOCKER_FILE: Dockerfile
+  before_script:
+    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
+  script:
+    - echo "Building indexer image..."
+    - docker build -t $REGISTRY_IMAGE:latest -f $DOCKER_FILE .
+    - echo "Pushing image to registry..."
+    - docker push $REGISTRY_IMAGE:latest
+  only:
+    - main
