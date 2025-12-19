@@ -9,8 +9,6 @@ stages:
 build-indexer:
   stage: build
   image: docker:25.0.2-git
-  services:
-    - docker:dind
   variables:
     DOCKER_DRIVER: overlay2
     REGISTRY_IMAGE: $CI_APPLICATION_REPOSITORY/rust-indexer
