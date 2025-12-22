@@ -24,9 +24,10 @@ build-indexer:
   - |
     echo "Building indexer image..."
 
-    cp $ENV_FILE .env
+    cat $ENV_FILE > .env
 
     cat .env
+    ls -a
 
     docker build --network host -f $DOCKER_FILE \
       -t "$REGISTRY_IMAGE:$CI_PIPELINE_ID" \
