@@ -16,6 +16,8 @@ COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY slot_hashes.csv ./
 
+RUN cat .env
+
 # Build for release
 RUN cargo build --release
 
