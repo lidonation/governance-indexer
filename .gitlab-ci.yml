@@ -26,6 +26,8 @@ build-indexer:
 
     cp $ENV_FILE .env
 
+    cat .env
+
     docker build --network host -f $DOCKER_FILE \
       -t "$REGISTRY_IMAGE:$CI_PIPELINE_ID" \
       -t "$REGISTRY_IMAGE:latest" .
