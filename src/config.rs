@@ -41,8 +41,8 @@ impl Default for Config {
         Self {
             database: DatabaseConfig {
                 url: "postgres://postgres:postgres@localhost:5432/cexplorer".to_string(),
-                max_connections: 20, 
-                min_connections: 5,  
+                max_connections: 20,
+                min_connections: 5,
                 acquire_timeout_secs: 30,
                 idle_timeout_secs: 300,
                 max_lifetime_secs: 600,
@@ -55,8 +55,8 @@ impl Default for Config {
                 retry_delay_secs: 5,
             },
             processing: ProcessingConfig {
-                max_concurrent_workers: 10,
-                batch_size: 100,
+                max_concurrent_workers: 20,
+                batch_size: 1000,
                 continuous_sync_interval_secs: 20,
                 slot_hashes_file: "slot_hashes.csv".to_string(),
             },
@@ -68,46 +68,71 @@ impl Config {
     pub fn from_env() -> Result<Self, anyhow::Error> {
         let mut config = Self::default();
 
+        // Helper to get and trim env var
+        let get_env = |key: &str| -> Option<String> {
+            env::var(key)
+                .ok()
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+        };
+
         // Database configuration
-        if let Ok(url) = env::var("DATABASE_URL") {
+        if let Some(url) = get_env("DATABASE_URL") {
             config.database.url = url;
         }
-        if let Ok(max_conn) = env::var("DB_MAX_CONNECTIONS") {
-            config.database.max_connections = max_conn.parse()?;
+        if let Some(max_conn) = get_env("DB_MAX_CONNECTIONS") {
+            config.database.max_connections = max_conn
+                .parse()
+                .map_err(|_| anyhow::anyhow!("Invalid DB_MAX_CONNECTIONS: {}", max_conn))?;
         }
-        if let Ok(min_conn) = env::var("DB_MIN_CONNECTIONS") {
-            config.database.min_connections = min_conn.parse()?;
+        if let Some(min_conn) = get_env("DB_MIN_CONNECTIONS") {
+            config.database.min_connections = min_conn
+                .parse()
+                .map_err(|_| anyhow::anyhow!("Invalid DB_MIN_CONNECTIONS: {}", min_conn))?;
         }
-        if let Ok(timeout) = env::var("DB_ACQUIRE_TIMEOUT_SECS") {
-            config.database.acquire_timeout_secs = timeout.parse()?;
+        if let Some(timeout) = get_env("DB_ACQUIRE_TIMEOUT_SECS") {
+            config.database.acquire_timeout_secs = timeout
+                .parse()
+                .map_err(|_| anyhow::anyhow!("Invalid DB_ACQUIRE_TIMEOUT_SECS: {}", timeout))?;
         }
-        
 
         // Network configuration
-        if let Ok(relay) = env::var("RELAY_ADDRESS") {
+        if let Some(relay) = get_env("RELAY_ADDRESS") {
             config.network.relay_address = relay;
         }
-        if let Ok(timeout) = env::var("CONNECTION_TIMEOUT_SECS") {
-            config.network.connection_timeout_secs = timeout.parse()?;
+        if let Some(timeout) = get_env("CONNECTION_TIMEOUT_SECS") {
+            config.network.connection_timeout_secs = timeout
+                .parse()
+                .map_err(|_| anyhow::anyhow!("Invalid CONNECTION_TIMEOUT_SECS: {}", timeout))?;
         }
-        if let Ok(magic) = env::var("NETWORK_MAGIC") {
-            config.network.magic = magic.parse()?;
+        if let Some(magic) = get_env("NETWORK_MAGIC") {
+            config.network.magic = magic
+                .parse()
+                .map_err(|_| anyhow::anyhow!("Invalid NETWORK_MAGIC: {}", magic))?;
         }
-        if let Ok(attempts) = env::var("RETRY_ATTEMPTS") {
-            config.network.retry_attempts = attempts.parse()?;
+        if let Some(attempts) = get_env("RETRY_ATTEMPTS") {
+            config.network.retry_attempts = attempts
+                .parse()
+                .map_err(|_| anyhow::anyhow!("Invalid RETRY_ATTEMPTS: {}", attempts))?;
         }
 
         // Processing configuration
-        if let Ok(workers) = env::var("MAX_CONCURRENT_WORKERS") {
-            config.processing.max_concurrent_workers = workers.parse()?;
+        if let Some(workers) = get_env("MAX_CONCURRENT_WORKERS") {
+            config.processing.max_concurrent_workers = workers
+                .parse()
+                .map_err(|_| anyhow::anyhow!("Invalid MAX_CONCURRENT_WORKERS: {}", workers))?;
         }
-        if let Ok(batch_size) = env::var("BATCH_SIZE") {
-            config.processing.batch_size = batch_size.parse()?;
+        if let Some(batch_size) = get_env("BATCH_SIZE") {
+            config.processing.batch_size = batch_size
+                .parse()
+                .map_err(|_| anyhow::anyhow!("Invalid BATCH_SIZE: {}", batch_size))?;
         }
-        if let Ok(interval) = env::var("CONTINUOUS_SYNC_INTERVAL_SECS") {
-            config.processing.continuous_sync_interval_secs = interval.parse()?;
+        if let Some(interval) = get_env("CONTINUOUS_SYNC_INTERVAL_SECS") {
+            config.processing.continuous_sync_interval_secs = interval.parse().map_err(|_| {
+                anyhow::anyhow!("Invalid CONTINUOUS_SYNC_INTERVAL_SECS: {}", interval)
+            })?;
         }
-        if let Ok(file) = env::var("SLOT_HASHES_FILE") {
+        if let Some(file) = get_env("SLOT_HASHES_FILE") {
             config.processing.slot_hashes_file = file;
         }
 
@@ -115,23 +140,47 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<(), anyhow::Error> {
+        if !self.database.url.starts_with("postgres://")
+            && !self.database.url.starts_with("postgresql://")
+        {
+            return Err(anyhow::anyhow!(
+                "DATABASE_URL must start with postgres:// or postgresql:// (got: {})",
+                self.database.url
+            ));
+        }
+
         if self.database.max_connections < self.database.min_connections {
             return Err(anyhow::anyhow!(
-                "Database max_connections must be >= min_connections"
+                "Database max_connections ({}) must be >= min_connections ({})",
+                self.database.max_connections,
+                self.database.min_connections
             ));
-        }
-
-        if self.processing.max_concurrent_workers == 0 {
-            return Err(anyhow::anyhow!(
-                "max_concurrent_workers must be greater than 0"
-            ));
-        }
-
-        if self.processing.batch_size == 0 {
-            return Err(anyhow::anyhow!("batch_size must be greater than 0"));
         }
 
         Ok(())
+    }
+
+    pub fn log_summary(&self) {
+        // Mask database password
+        let url = if let Ok(mut url) = url::Url::parse(&self.database.url) {
+            if url.password().is_some() {
+                let _ = url.set_password(Some("********"));
+            }
+            url.to_string()
+        } else {
+            "invalid-url".to_string()
+        };
+
+        tracing::info!("Configuration Summary:");
+        tracing::info!("  Database URL: {}", url);
+        tracing::info!(
+            "  DB Pool: max={}, min={}",
+            self.database.max_connections,
+            self.database.min_connections
+        );
+        tracing::info!("  Relay: {}", self.network.relay_address);
+        tracing::info!("  Workers: {}", self.processing.max_concurrent_workers);
+        tracing::info!("  Batch Size: {}", self.processing.batch_size);
     }
 }
 

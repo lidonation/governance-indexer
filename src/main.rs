@@ -24,6 +24,7 @@ async fn main() -> Result<(), anyhow::Error> {
     // Load configuration
     let config = Config::from_env()?;
     config.validate()?;
+    config.log_summary();
 
     // Initialize metrics
     let metrics = Metrics::new();
