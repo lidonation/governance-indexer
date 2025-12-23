@@ -18,7 +18,13 @@ use metrics::Metrics;
 
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
-    dotenv().ok();
+    match dotenv() {
+        Ok(path) => tracing::info!("✅ Loaded .env file from: {:?}", path),
+        Err(e) => tracing::warn!(
+            "⚠️  Note: No .env file loaded: {} (this is fine if using real environment variables)",
+            e
+        ),
+    }
     tracing_subscriber::fmt::init();
 
     // Load configuration

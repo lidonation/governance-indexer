@@ -1,6 +1,5 @@
 // use anyhow::Context; // Removed unused import
 use serde::Deserialize;
-use std::env;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct DatabaseConfig {
@@ -70,17 +69,34 @@ impl Config {
 
         // Helper to get and trim env var
         let get_env = |key: &str| -> Option<String> {
-            env::var(key)
+            let val = std::env::var(key)
                 .ok()
                 .map(|v| v.trim().to_string())
-                .filter(|v| !v.is_empty())
+                .filter(|v| !v.is_empty());
+
+            if let Some(ref v) = val {
+                if key.contains("URL") || key.contains("PASSWORD") {
+                    tracing::debug!("Found environment variable: {}=********", key);
+                } else {
+                    tracing::debug!("Found environment variable: {}={}", key, v);
+                }
+            }
+            val
         };
 
         // Database configuration
         if let Some(url) = get_env("DATABASE_URL") {
+            tracing::info!("DATABASE_URL: loading from environment/dotenv");
             config.database.url = url;
+        } else {
+            tracing::warn!("DATABASE_URL: not found in environment, using hardcoded default");
         }
+
         if let Some(max_conn) = get_env("DB_MAX_CONNECTIONS") {
+            tracing::info!(
+                "DB_MAX_CONNECTIONS: loading from environment/dotenv ({})",
+                max_conn
+            );
             config.database.max_connections = max_conn
                 .parse()
                 .map_err(|_| anyhow::anyhow!("Invalid DB_MAX_CONNECTIONS: {}", max_conn))?;
@@ -98,8 +114,15 @@ impl Config {
 
         // Network configuration
         if let Some(relay) = get_env("RELAY_ADDRESS") {
+            tracing::info!("RELAY_ADDRESS: loading from environment/dotenv ({})", relay);
             config.network.relay_address = relay;
+        } else {
+            tracing::warn!(
+                "RELAY_ADDRESS: not found in environment, using hardcoded default: {}",
+                config.network.relay_address
+            );
         }
+
         if let Some(timeout) = get_env("CONNECTION_TIMEOUT_SECS") {
             config.network.connection_timeout_secs = timeout
                 .parse()
@@ -118,6 +141,10 @@ impl Config {
 
         // Processing configuration
         if let Some(workers) = get_env("MAX_CONCURRENT_WORKERS") {
+            tracing::info!(
+                "MAX_CONCURRENT_WORKERS: loading from environment/dotenv ({})",
+                workers
+            );
             config.processing.max_concurrent_workers = workers
                 .parse()
                 .map_err(|_| anyhow::anyhow!("Invalid MAX_CONCURRENT_WORKERS: {}", workers))?;
