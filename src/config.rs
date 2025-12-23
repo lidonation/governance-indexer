@@ -67,53 +67,75 @@ impl Config {
     pub fn from_env() -> Result<Self, anyhow::Error> {
         let mut config = Self::default();
 
-        // Helper to get and trim env var
+        // 1. Manually load .env file into a Map for priority handling
+        // This allows us to use .env values even if the environment has an EMPTY variable shadowing it.
+        let mut env_file_vars = std::collections::HashMap::new();
+        if let Ok(iter) = dotenvy::from_path_iter(".env") {
+            for item in iter {
+                if let Ok((k, v)) = item {
+                    let k = k.trim().to_string();
+                    let v = v.trim().to_string();
+                    if !v.is_empty() {
+                        env_file_vars.insert(k, v);
+                    }
+                }
+            }
+            tracing::info!(
+                "Loaded {} non-empty variables from .env file",
+                env_file_vars.len()
+            );
+        }
+
+        // Helper to get and trim env var with override logic
         let get_env = |key: &str| -> Option<String> {
-            // 1. Try exact match first (standard)
+            // Priority 1: Real Environment Variable (must be non-empty)
             if let Ok(v) = std::env::var(key) {
                 let trimmed = v.trim();
-                if trimmed.is_empty() {
-                    tracing::warn!("Variable {} is present but EMPTY in environment", key);
-                    return None;
-                }
-                if key.contains("URL") || key.contains("PASSWORD") {
-                    tracing::info!("Found variable {}: (hidden)", key);
-                } else {
-                    tracing::info!("Found variable {}: {}", key, trimmed);
-                }
-                return Some(trimmed.to_string());
-            }
-
-            // 2. Fallback: Search all variables (handles BOM or hidden characters on first line)
-            for (k, v) in std::env::vars() {
-                // Check if key exists inside another (handles \u{feff}DATABASE_URL)
-                if k.contains(key) && k.len() <= key.len() + 4 {
-                    let trimmed = v.trim();
-                    if trimmed.is_empty() {
-                        continue;
+                if !trimmed.is_empty() {
+                    if key.contains("URL") || key.contains("PASSWORD") {
+                        tracing::info!("Found variable {} in environment: (hidden)", key);
+                    } else {
+                        tracing::info!("Found variable {} in environment: {}", key, trimmed);
                     }
-
-                    tracing::info!(
-                        "Found variable {} (exact key in env: {:?}): successfully loaded",
-                        key,
-                        k
-                    );
                     return Some(trimmed.to_string());
                 }
+                tracing::warn!("Variable {} is present but EMPTY in environment", key);
             }
 
-            tracing::debug!("Variable {} not found in environment", key);
+            // Priority 2: Baked-in .env file (even if shadowed in env by empty string)
+            if let Some(v) = env_file_vars.get(key) {
+                if key.contains("URL") || key.contains("PASSWORD") {
+                    tracing::info!("Found variable {} in .env file: (hidden)", key);
+                } else {
+                    tracing::info!("Found variable {} in .env file: {}", key, v);
+                }
+                return Some(v.clone());
+            }
+
+            // Priority 3: BOM-aware search in all environment variables
+            for (k, v) in std::env::vars() {
+                if k.contains(key) && k.len() <= key.len() + 4 {
+                    let trimmed = v.trim();
+                    if !trimmed.is_empty() {
+                        tracing::info!(
+                            "Found variable {} (as {:?}) in environment fallback",
+                            key,
+                            k
+                        );
+                        return Some(trimmed.to_string());
+                    }
+                }
+            }
+
+            tracing::debug!("Variable {} not found in any source", key);
             None
         };
 
         // Database configuration
         if let Some(url) = get_env("DATABASE_URL") {
-            tracing::info!("DATABASE_URL: successfully loaded");
             config.database.url = url;
         } else {
-            tracing::error!(
-                "❌ DATABASE_URL: NOT FOUND in environment or .env. Using fallback default!"
-            );
+            tracing::error!("❌ DATABASE_URL: NOT FOUND in any source. Using hardcoded fallback!");
         }
 
         if let Some(max_conn) = get_env("DB_MAX_CONNECTIONS") {
