@@ -69,27 +69,51 @@ impl Config {
 
         // Helper to get and trim env var
         let get_env = |key: &str| -> Option<String> {
-            let val = std::env::var(key)
-                .ok()
-                .map(|v| v.trim().to_string())
-                .filter(|v| !v.is_empty());
-
-            if let Some(ref v) = val {
+            // 1. Try exact match first (standard)
+            if let Ok(v) = std::env::var(key) {
+                let trimmed = v.trim();
+                if trimmed.is_empty() {
+                    tracing::warn!("Variable {} is present but EMPTY in environment", key);
+                    return None;
+                }
                 if key.contains("URL") || key.contains("PASSWORD") {
-                    tracing::debug!("Found environment variable: {}=********", key);
+                    tracing::info!("Found variable {}: (hidden)", key);
                 } else {
-                    tracing::debug!("Found environment variable: {}={}", key, v);
+                    tracing::info!("Found variable {}: {}", key, trimmed);
+                }
+                return Some(trimmed.to_string());
+            }
+
+            // 2. Fallback: Search all variables (handles BOM or hidden characters on first line)
+            for (k, v) in std::env::vars() {
+                // Check if key exists inside another (handles \u{feff}DATABASE_URL)
+                if k.contains(key) && k.len() <= key.len() + 4 {
+                    let trimmed = v.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+
+                    tracing::info!(
+                        "Found variable {} (exact key in env: {:?}): successfully loaded",
+                        key,
+                        k
+                    );
+                    return Some(trimmed.to_string());
                 }
             }
-            val
+
+            tracing::debug!("Variable {} not found in environment", key);
+            None
         };
 
         // Database configuration
         if let Some(url) = get_env("DATABASE_URL") {
-            tracing::info!("DATABASE_URL: loading from environment/dotenv");
+            tracing::info!("DATABASE_URL: successfully loaded");
             config.database.url = url;
         } else {
-            tracing::warn!("DATABASE_URL: not found in environment, using hardcoded default");
+            tracing::error!(
+                "❌ DATABASE_URL: NOT FOUND in environment or .env. Using fallback default!"
+            );
         }
 
         if let Some(max_conn) = get_env("DB_MAX_CONNECTIONS") {

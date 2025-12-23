@@ -1,10 +1,10 @@
 use anyhow::Context;
-use dotenv::dotenv;
+use dotenvy::dotenv;
 use futures::stream::{self, StreamExt};
 use pallas::network::miniprotocols::Point;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 mod config;
 mod db;
@@ -18,14 +18,30 @@ use metrics::Metrics;
 
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
+    // 1. Initialize logging first so we can see diagnostics
+    tracing_subscriber::fmt::init();
+
+    // 2. Check if .env exists on disk (independent of dotenv-rs)
+    if std::path::Path::new(".env").exists() {
+        info!(
+            "📂 Found .env file on disk at {:?}",
+            std::env::current_dir()?.join(".env")
+        );
+    } else {
+        warn!(
+            "❓ No .env file found in current directory: {:?}",
+            std::env::current_dir()?
+        );
+    }
+
+    // 3. Load .env file
     match dotenv() {
-        Ok(path) => tracing::info!("✅ Loaded .env file from: {:?}", path),
-        Err(e) => tracing::warn!(
-            "⚠️  Note: No .env file loaded: {} (this is fine if using real environment variables)",
+        Ok(path) => info!("✅ dotenv loaded variables from: {:?}", path),
+        Err(e) => warn!(
+            "⚠️  dotenv did not load a file: {} (this is normal if using real environment variables)",
             e
         ),
     }
-    tracing_subscriber::fmt::init();
 
     // Load configuration
     let config = Config::from_env()?;
