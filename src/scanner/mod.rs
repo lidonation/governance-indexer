@@ -1,4 +1,4 @@
-use crate::config::{cardano, NetworkConfig};
+use crate::config::{NetworkConfig, cardano};
 use crate::db;
 use crate::parser;
 use chrono::{DateTime, TimeZone, Utc};
@@ -6,9 +6,9 @@ use pallas::ledger::traverse::MultiEraBlock;
 use pallas::network::facades::PeerClient;
 use pallas::network::miniprotocols::Point;
 use sqlx::{Pool, Postgres};
-use tracing::{info, warn};
-use tokio::time::{sleep, Duration};
 use std::time::Instant;
+use tokio::time::{Duration, sleep};
+use tracing::{info, warn};
 
 fn slot_to_timestamp(slot: u64) -> DateTime<Utc> {
     let slots_since_shelley = slot.saturating_sub(cardano::SHELLEY_START_SLOT);
@@ -34,41 +34,55 @@ pub async fn connect(address: &str) -> Result<PeerClient, anyhow::Error> {
     connect_with_config(address, &default_config).await
 }
 
-pub async fn connect_with_config(address: &str, config: &NetworkConfig) -> Result<PeerClient, anyhow::Error> {
+pub async fn connect_with_config(
+    address: &str,
+    config: &NetworkConfig,
+) -> Result<PeerClient, anyhow::Error> {
     let mut attempts = 0;
     let start_time = Instant::now();
-    
+
     loop {
         attempts += 1;
         info!("Connection attempt {} to {}", attempts, address);
-        
+
         match tokio::time::timeout(
             Duration::from_secs(config.connection_timeout_secs),
             PeerClient::connect(address, config.magic.into()),
-        ).await {
+        )
+        .await
+        {
             Ok(Ok(peer)) => {
-                info!("✅ Connected to {} in {:?} (attempt {})", 
-                    address, start_time.elapsed(), attempts);
+                info!(
+                    "✅ Connected to {} in {:?} (attempt {})",
+                    address,
+                    start_time.elapsed(),
+                    attempts
+                );
                 return Ok(peer);
-            },
+            }
             Ok(Err(e)) => {
                 warn!("❌ Connection failed to {}: {:?}", address, e);
-            },
+            }
             Err(_) => {
-                warn!("⏰ Connection timeout to {} after {}s", address, config.connection_timeout_secs);
+                warn!(
+                    "⏰ Connection timeout to {} after {}s",
+                    address, config.connection_timeout_secs
+                );
             }
         }
-        
+
         if attempts >= config.retry_attempts {
             return Err(anyhow::anyhow!(
-                "Failed to connect to {} after {} attempts in {:?}", 
-                address, attempts, start_time.elapsed()
+                "Failed to connect to {} after {} attempts in {:?}",
+                address,
+                attempts,
+                start_time.elapsed()
             ));
         }
-        
+
         // Exponential backoff with jitter
-        let delay = config.retry_delay_secs * (1 << (attempts - 1).min(5)) + 
-                   fastrand::u64(0..config.retry_delay_secs);
+        let delay = config.retry_delay_secs * (1 << (attempts - 1).min(5))
+            + fastrand::u64(0..config.retry_delay_secs);
         warn!("⏳ Retrying connection in {}s...", delay);
         sleep(Duration::from_secs(delay)).await;
     }
@@ -80,13 +94,32 @@ pub async fn worker(
     range: (Point, Point),
     address: String,
     pool: Pool<Postgres>,
+    worker_id: String,
 ) -> Result<(u64, u64), anyhow::Error> {
     let (start, end) = range;
+
+    // Check for checkpoint
+    let effective_start =
+        if let Ok(Some((last_slot, last_hash_hex))) = db::get_checkpoint(&pool, &worker_id).await {
+            let last_hash = hex::decode(&last_hash_hex)?;
+            let checkpoint_point = Point::Specific(last_slot, last_hash);
+            info!(
+                "🔄 Worker {} resuming from checkpoint: slot {}",
+                worker_id, last_slot
+            );
+            checkpoint_point
+        } else {
+            start
+        };
+
     let mut peer = connect(&address).await?;
     let client = peer.blockfetch();
 
     // Request the range - this initiates the streaming protocol
-    match client.request_range((start.clone(), end.clone())).await {
+    match client
+        .request_range((effective_start.clone(), end.clone()))
+        .await
+    {
         Ok(_) => {}
         Err(e) => {
             // Handle empty ranges gracefully - some ranges may legitimately have no blocks
@@ -105,6 +138,7 @@ pub async fn worker(
     while let Some(body) = client.recv_while_streaming().await? {
         let block = MultiEraBlock::decode(&body)?;
         let slot = block.slot();
+        let hash = hex::encode(block.hash());
         let timestamp = slot_to_timestamp(slot);
         let epoch = slot_to_epoch(slot);
 
@@ -114,6 +148,25 @@ pub async fn worker(
             db::persist_events(&pool, events, timestamp, epoch as i64, slot as i64).await?;
         }
         block_count += 1;
+
+        // Update checkpoint every block (or every N blocks for performance)
+        // For simplicity during initial sync, we do it every block or after a batch
+        if block_count % 100 == 0 {
+            db::update_checkpoint(&pool, &worker_id, slot, &hash).await?;
+        }
+
+        if block_count % 1000 == 0 {
+            info!(
+                "📦 Worker {}: processed {} blocks, {} events. Current slot: {}",
+                worker_id, block_count, event_count, slot
+            );
+        }
+    }
+
+    // Final checkpoint update
+    if let Some(body_opt) = client.recv_while_streaming().await.ok().flatten() {
+        let block = MultiEraBlock::decode(&body_opt)?;
+        db::update_checkpoint(&pool, &worker_id, block.slot(), &hex::encode(block.hash())).await?;
     }
 
     Ok((block_count, event_count))

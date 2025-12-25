@@ -22,7 +22,7 @@ services:
 
   # Rust Indexer Application
   indexer:
-    image: registry.2lovelaces.io/voltaire/www.1694.io/rust-indexer:latest
+    image: registry.2lovelaces.io/voltaire/governance-indexer
     container_name: governance-indexer-app
     environment:
       DATABASE_URL: postgres://govindex:govindex@postgres:5432/govindex

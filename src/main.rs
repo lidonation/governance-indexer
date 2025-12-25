@@ -143,7 +143,8 @@ async fn main() -> Result<(), anyhow::Error> {
                     "🔨 Worker {} starting: slots {}-{}",
                     worker_idx, start_slot, end_slot
                 );
-                match scanner::worker((start_point, end_point), relay, pool).await {
+                let worker_id = format!("historical_{}", worker_idx);
+                match scanner::worker((start_point, end_point), relay, pool, worker_id).await {
                     Ok((blocks, events)) => {
                         info!(
                             "✅ Worker {} finished: {} blocks, {} events",

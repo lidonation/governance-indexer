@@ -1,11 +1,23 @@
 use crate::config::DatabaseConfig;
 use crate::parser::GovEvent;
 use chrono::{DateTime, Utc};
+use lru::LruCache;
 use serde_json::json;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{Pool, Postgres, Transaction};
+use std::num::NonZeroUsize;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
-use tracing::info;
+use tokio_retry::Retry;
+use tokio_retry::strategy::{ExponentialBackoff, jitter};
+use tracing::{error, info, warn};
+
+/// Global cache for delegation lookups (stake_address -> previous_drep)
+static DELEGATION_CACHE: OnceLock<Mutex<LruCache<String, String>>> = OnceLock::new();
+
+fn get_delegation_cache() -> &'static Mutex<LruCache<String, String>> {
+    DELEGATION_CACHE.get_or_init(|| Mutex::new(LruCache::new(NonZeroUsize::new(10000).unwrap())))
+}
 
 pub async fn connect(config: &DatabaseConfig) -> Result<Pool<Postgres>, anyhow::Error> {
     info!("Connecting to database with optimized pool settings...");
@@ -41,17 +53,30 @@ pub async fn persist_events(
         return Ok(());
     }
 
-    // Use a transaction for better performance and consistency
-    let mut tx = pool.begin().await?;
+    let retry_strategy = ExponentialBackoff::from_millis(100)
+        .map(jitter) // add jitter to delays
+        .take(5); // limit to 5 retries
 
-    // Process all events - simplified now that we have a unified table
-    for event in &events {
-        insert_governance_event(&mut tx, event, timestamp, epoch, slot).await?;
-    }
+    Retry::spawn(retry_strategy, || {
+        let pool = pool.clone();
+        let events = events.clone();
+        let timestamp = timestamp;
+        let epoch = epoch;
+        let slot = slot;
 
-    // Commit the transaction
-    tx.commit().await?;
-    Ok(())
+        async move {
+            let mut tx = pool.begin().await?;
+
+            for event in &events {
+                insert_governance_event(&mut tx, event, timestamp, epoch, slot).await?;
+            }
+
+            tx.commit().await?;
+            Ok::<(), anyhow::Error>(())
+        }
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("Failed to persist events after retries: {}", e))
 }
 
 /// Unified function to insert all governance events into drep_timeline_event table
@@ -139,21 +164,38 @@ async fn insert_governance_event(
             drep_id,
             drep_has_script,
         } => {
-            let previous_drep = sqlx::query_scalar::<_, Option<String>>(
-                r#"
-                SELECT metadata->>'target_drep' as drep
-                FROM drep_timeline_event
-                WHERE metadata->>'stake_address' = $1
-                  AND event_type = 'delegation'
-                ORDER BY timestamp DESC
-                LIMIT 1
-                "#,
-            )
-            .bind(stake_credential)
-            .fetch_optional(tx.as_mut())
-            .await?
-            .flatten()
-            .unwrap_or("drep_always_abstain".to_string());
+            // Check cache first
+            let cached_drep = {
+                let mut cache = get_delegation_cache().lock().unwrap();
+                cache.get(stake_credential).cloned()
+            };
+
+            let previous_drep = if let Some(drep) = cached_drep {
+                drep
+            } else {
+                let db_drep = sqlx::query_scalar::<_, Option<String>>(
+                    r#"
+                    SELECT metadata->>'target_drep' as drep
+                    FROM drep_timeline_event
+                    WHERE metadata->>'stake_address' = $1
+                      AND event_type = 'delegation'
+                    ORDER BY timestamp DESC
+                    LIMIT 1
+                    "#,
+                )
+                .bind(stake_credential)
+                .fetch_optional(tx.as_mut())
+                .await?
+                .flatten()
+                .unwrap_or("drep_always_abstain".to_string());
+
+                // Update cache
+                {
+                    let mut cache = get_delegation_cache().lock().unwrap();
+                    cache.put(stake_credential.clone(), db_drep.clone());
+                }
+                db_drep
+            };
 
             let metadata = json!({
                 "stake_address": stake_credential,
@@ -285,6 +327,45 @@ async fn insert_governance_event(
             .await?;
         }
     }
+
+    Ok(())
+}
+
+pub async fn get_checkpoint(
+    pool: &Pool<Postgres>,
+    worker_id: &str,
+) -> Result<Option<(u64, String)>, anyhow::Error> {
+    let row = sqlx::query_as::<_, (i64, String)>(
+        "SELECT last_slot, last_hash FROM sync_checkpoint WHERE worker_id = $1",
+    )
+    .bind(worker_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(|(slot, hash)| (slot as u64, hash)))
+}
+
+pub async fn update_checkpoint(
+    pool: &Pool<Postgres>,
+    worker_id: &str,
+    slot: u64,
+    hash: &str,
+) -> Result<(), anyhow::Error> {
+    sqlx::query(
+        r#"
+        INSERT INTO sync_checkpoint (worker_id, last_slot, last_hash, updated_at)
+        VALUES ($1, $2, $3, now())
+        ON CONFLICT (worker_id) DO UPDATE SET
+            last_slot = EXCLUDED.last_slot,
+            last_hash = EXCLUDED.last_hash,
+            updated_at = EXCLUDED.updated_at
+        "#,
+    )
+    .bind(worker_id)
+    .bind(slot as i64)
+    .bind(hash)
+    .execute(pool)
+    .await?;
 
     Ok(())
 }
