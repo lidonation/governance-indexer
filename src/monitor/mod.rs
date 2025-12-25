@@ -1,7 +1,6 @@
 use crate::config::{Config, cardano};
 use crate::{db, parser, scanner};
 use chrono::{DateTime, TimeZone, Utc};
-use colored::*;
 use pallas::network::miniprotocols::{Point, chainsync};
 use sqlx::{Pool, Postgres};
 use tokio::time::{Duration, sleep};
@@ -36,14 +35,13 @@ pub async fn continuous_sync(
             Ok(new_tip) => {
                 info!(
                     "{} Sync iteration complete. New tip: {:?}",
-                    "Success:",
-                    new_tip
+                    "Success:", new_tip
                 );
                 // Update start_point for next iteration would go here
                 // For now, we'll just wait and retry
             }
             Err(e) => {
-                error!("{} Sync iteration failed: {:?}", "Error:".red(), e);
+                error!("{} Sync iteration failed: {:?}", "Error:", e);
             }
         }
 
@@ -148,8 +146,7 @@ async fn run_sync_iteration(
                         if current_slot >= &tip_slot {
                             info!(
                                 "{} Caught up to tip. Processed {} blocks",
-                                "Success:",
-                                processed_count
+                                "Success:", processed_count
                             );
                             return Ok(last_point);
                         }

@@ -2,7 +2,6 @@ use crate::config::{NetworkConfig, cardano};
 use crate::db;
 use crate::parser;
 use chrono::{DateTime, TimeZone, Utc};
-use colored::*;
 use pallas::ledger::traverse::MultiEraBlock;
 use pallas::network::facades::PeerClient;
 use pallas::network::miniprotocols::Point;
@@ -63,19 +62,12 @@ pub async fn connect_with_config(
                 return Ok(peer);
             }
             Ok(Err(e)) => {
-                warn!(
-                    "{} Connection failed to {}: {:?}",
-                    "Warning:",
-                    address,
-                    e
-                );
+                warn!("{} Connection failed to {}: {:?}", "Warning:", address, e);
             }
             Err(_) => {
                 warn!(
                     "{} Connection timeout to {} after {}s",
-                    "Warning:",
-                    address,
-                    config.connection_timeout_secs
+                    "Warning:", address, config.connection_timeout_secs
                 );
             }
         }
@@ -88,7 +80,6 @@ pub async fn connect_with_config(
                     attempts,
                     start_time.elapsed()
                 )
-                .red()
                 .to_string()
             ));
         }

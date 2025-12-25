@@ -1,5 +1,5 @@
 [package]
-name = "rust-indexer"
+name = "indexer"
 version = "0.1.0"
 edition = "2024"
 
@@ -24,4 +24,3 @@ lru = "0.12"
 tokio-retry = "0.3"
 clap = { version = "4.4", features = ["derive"] }
 nix = { version = "0.27", features = ["signal", "process"] }
-colored = "2.1"

@@ -33,26 +33,32 @@ Configure the system using a `.env` file or environment variables.
 
 ## Usage
 
-The indexer provides a native CLI for management.
+In development, you can use `cargo run`. In a production Docker or Kubernetes environment, call the `indexer` binary directly.
 
-### Starting the Indexer
+### Process Management
+Management commands use a `.indexer.pid` file in the current directory to track the running instance.
+
+**Local Development:**
 ```bash
-cargo run -- start
+cargo run -- status
+cargo run -- stop
+cargo run -- pause
+cargo run -- continue
 ```
 
-### Process Control
-Management commands use a `.indexer.pid` file to track the running instance.
+**Production (Docker / Kubernetes):**
 ```bash
-cargo run -- stop      # Gracefully terminate the process
-cargo run -- pause     # Suspend execution
-cargo run -- continue  # Resume execution
+# Docker
+docker exec -it <container_id> indexer status
+
+# Kubernetes
+kubectl exec -it <pod_name> -- indexer status
 ```
 
 ### Data Management
 ```bash
-cargo run -- status    # View event counts and sync progress
-cargo run -- wipe      # Permanently delete all indexed data and checkpoints
-cargo run -- reset     # Wipe data and start a fresh synchronization
+indexer wipe
+indexer reset
 ```
 
 ## Docker Deployment
@@ -76,6 +82,6 @@ This project is a prototype. Current features include:
 - Denormalized schema for high-performance DRep timeline lookups.
 - LRU caching for delegation state.
 - Checkpointing for resilient synchronization across restarts.
-- Professional color-coded logging for monitoring.
+- Professional logging for monitoring.
 
 Note: The indexer currently targets the Voltair preview and Mainnet networks based on provided boundary hashes.

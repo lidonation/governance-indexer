@@ -34,7 +34,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy the binary from builder
-COPY --from=builder /app/target/release/rust-indexer /app/rust-indexer
+COPY --from=builder /app/target/release/indexer /usr/local/bin/indexer
 
 # Copy the slot_hashes.csv file
 COPY --from=builder /app/slot_hashes.csv /app/slot_hashes.csv
@@ -46,4 +46,4 @@ COPY --from=builder /app/.env /app/.env
 ENV RUST_LOG=info
 
 # Run the binary
-CMD ["/app/rust-indexer", "start"]
+CMD ["indexer", "start"]
