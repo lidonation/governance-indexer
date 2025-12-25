@@ -17,6 +17,7 @@ mod scanner;
 use clap::{Parser, Subcommand};
 use config::Config;
 use metrics::Metrics;
+use sysinfo::System;
 
 struct PidCleanup;
 
@@ -75,13 +76,51 @@ fn get_running_pid() -> Result<nix::unistd::Pid, anyhow::Error> {
 }
 
 fn send_signal(sig: nix::sys::signal::Signal, action_name: &str) -> Result<(), anyhow::Error> {
-    let pid = get_running_pid()?;
-    nix::sys::signal::kill(pid, sig)
-        .with_context(|| format!("Failed to send {} signal to process {}", action_name, pid))?;
-    println!(
-        "{} {} signal to indexer (PID: {})",
-        "Success:", action_name, pid
-    );
+    let mut system = System::new_all();
+    system.refresh_all();
+
+    let my_pid = std::process::id();
+    let mut found_count = 0;
+
+    for (pid, process) in system.processes() {
+        let name = process.name();
+        // sysinfo 0.30 process.name() returns &OsStr
+
+        // Look for our binary names
+        if (name == "indexer" || name == "rust-indexer") && pid.as_u32() != my_pid {
+            let nix_pid = nix::unistd::Pid::from_raw(pid.as_u32() as i32);
+            if let Err(e) = nix::sys::signal::kill(nix_pid, sig) {
+                error!("Failed to signal process {} (PID {}): {:?}", name, pid, e);
+            } else {
+                info!("{} signal sent to {} (PID: {})", action_name, name, pid);
+                found_count += 1;
+            }
+        }
+    }
+
+    if found_count == 0 {
+        // Fallback to PID file if no processes found by name (e.g. if name changed)
+        if let Ok(pid) = get_running_pid() {
+            if pid.as_raw() != my_pid as i32 {
+                nix::sys::signal::kill(pid, sig)?;
+                info!("Sent {} signal to PID {} from PID file", action_name, pid);
+                found_count += 1;
+            }
+        }
+    }
+
+    if found_count > 0 {
+        println!(
+            "{} Successfully sent {} signal to {} instance(s).",
+            "Success:", action_name, found_count
+        );
+    } else {
+        warn!(
+            "No running indexer instances found to {}.",
+            action_name.to_lowercase()
+        );
+    }
+
     Ok(())
 }
 
