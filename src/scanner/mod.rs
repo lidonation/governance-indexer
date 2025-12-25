@@ -55,7 +55,7 @@ pub async fn connect_with_config(
             Ok(Ok(peer)) => {
                 info!(
                     "{} Connected to {} in {:?} (attempt {})",
-                    "Success:".green(),
+                    "Success:",
                     address,
                     start_time.elapsed(),
                     attempts
@@ -65,7 +65,7 @@ pub async fn connect_with_config(
             Ok(Err(e)) => {
                 warn!(
                     "{} Connection failed to {}: {:?}",
-                    "Warning:".yellow(),
+                    "Warning:",
                     address,
                     e
                 );
@@ -73,7 +73,7 @@ pub async fn connect_with_config(
             Err(_) => {
                 warn!(
                     "{} Connection timeout to {} after {}s",
-                    "Warning:".yellow(),
+                    "Warning:",
                     address,
                     config.connection_timeout_secs
                 );

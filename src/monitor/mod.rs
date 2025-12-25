@@ -36,7 +36,7 @@ pub async fn continuous_sync(
             Ok(new_tip) => {
                 info!(
                     "{} Sync iteration complete. New tip: {:?}",
-                    "Success:".green(),
+                    "Success:",
                     new_tip
                 );
                 // Update start_point for next iteration would go here
@@ -75,7 +75,7 @@ async fn run_sync_iteration(
     let mut last_point = known_point.clone();
 
     // Processing blocks - chainsync state machine pattern
-    info!("{}", "Status: Entering real-time monitoring loop".blue());
+    info!("{}", "Status: Entering real-time monitoring loop");
 
     loop {
         // In Pallas 0.33, request_next() sends the message AND blocks for the response,
@@ -83,7 +83,7 @@ async fn run_sync_iteration(
         // would cause a protocol agency error.
         info!("Note: Requesting next block...");
         let next = client.request_next().await?;
-        info!("{}", "Success: Response received".green());
+        info!("{}", "Success: Response received");
 
         match next {
             chainsync::NextResponse::RollForward(header_content, tip) => {
@@ -148,7 +148,7 @@ async fn run_sync_iteration(
                         if current_slot >= &tip_slot {
                             info!(
                                 "{} Caught up to tip. Processed {} blocks",
-                                "Success:".green(),
+                                "Success:",
                                 processed_count
                             );
                             return Ok(last_point);
@@ -159,7 +159,7 @@ async fn run_sync_iteration(
                 // Loop will request next block at the start of next iteration
             }
             chainsync::NextResponse::RollBackward(point, _tip) => {
-                warn!("{} Chain rollback to {:?}", "Warning:".yellow(), point);
+                warn!("{} Chain rollback to {:?}", "Warning:", point);
                 // In a production system, we'd need to handle rollbacks properly
                 // For now, we'll just log and continue
                 last_point = point;

@@ -15,7 +15,6 @@ mod parser;
 mod scanner;
 
 use clap::{Parser, Subcommand};
-use colored::*;
 use config::Config;
 use metrics::Metrics;
 
@@ -59,30 +58,29 @@ enum Commands {
     /// Continue/Resume the paused indexer process (SIGCONT)
     #[command(name = "continue")]
     Continue,
+    /// Alias for start (prototype use)
+    Build,
 }
 
 const PID_FILE: &str = ".indexer.pid";
 
 fn get_running_pid() -> Result<nix::unistd::Pid, anyhow::Error> {
     let pid_str = std::fs::read_to_string(PID_FILE)
-        .with_context(|| "Indexer is not running (no PID file found)".red())?;
+        .with_context(|| "Indexer is not running (no PID file found)")?;
     let pid: i32 = pid_str
         .trim()
         .parse()
-        .with_context(|| "Corrupted PID file".red())?;
+        .with_context(|| "Corrupted PID file")?;
     Ok(nix::unistd::Pid::from_raw(pid))
 }
 
 fn send_signal(sig: nix::sys::signal::Signal, action_name: &str) -> Result<(), anyhow::Error> {
     let pid = get_running_pid()?;
-    nix::sys::signal::kill(pid, sig).with_context(|| {
-        format!("Failed to send {} signal to process {}", action_name, pid).red()
-    })?;
+    nix::sys::signal::kill(pid, sig)
+        .with_context(|| format!("Failed to send {} signal to process {}", action_name, pid))?;
     println!(
         "{} {} signal to indexer (PID: {})",
-        "Success:".green().bold(),
-        action_name,
-        pid
+        "Success:", action_name, pid
     );
     Ok(())
 }
@@ -95,22 +93,15 @@ async fn main() -> Result<(), anyhow::Error> {
 
     // 2. Check if .env exists on disk
     if std::path::Path::new(".env").exists() {
-        info!("{}", "Note: Found .env file on disk".blue());
+        info!("{}", "Note: Found .env file on disk");
     } else {
-        warn!(
-            "{}",
-            "Warning: No .env file found in current directory".yellow()
-        );
+        warn!("{}", "Warning: No .env file found in current directory");
     }
 
     // 3. Load .env file
     match dotenv() {
-        Ok(path) => info!(
-            "{} {}",
-            "Success: Loaded environment from:".green(),
-            path.display()
-        ),
-        Err(_) => warn!("{}", "Note: Using system environment variables".yellow()),
+        Ok(path) => info!("{} {}", "Success: Loaded environment from:", path.display()),
+        Err(_) => warn!("{}", "Note: Using system environment variables"),
     }
 
     // Load configuration
@@ -122,7 +113,6 @@ async fn main() -> Result<(), anyhow::Error> {
                 println!(
                     "{}",
                     "Warning: This will permanently delete all indexed data and checkpoints."
-                        .yellow()
                 );
                 print!("Are you sure you want to proceed? (y/N): ");
                 use std::io::{Write, stdin};
@@ -130,20 +120,19 @@ async fn main() -> Result<(), anyhow::Error> {
                 let mut input = String::new();
                 stdin().read_line(&mut input)?;
                 if !input.trim().eq_ignore_ascii_case("y") {
-                    println!("{}", "Operation cancelled.".red());
+                    println!("{}", "Operation cancelled.");
                     return Ok(());
                 }
             }
             let pool = db::connect(&config.database).await?;
             db::wipe_data(&pool).await?;
-            println!("{}", "Success: Database wiped successfully.".green());
+            println!("{}", "Success: Database wiped successfully.");
         }
         Some(Commands::Reset { force }) => {
             if !force {
                 println!(
                     "{}",
                     "Warning: This will stop the indexer, wipe all data, and start a fresh sync."
-                        .yellow()
                 );
                 print!("Are you sure you want to proceed? (y/N): ");
                 use std::io::{Write, stdin};
@@ -151,22 +140,19 @@ async fn main() -> Result<(), anyhow::Error> {
                 let mut input = String::new();
                 stdin().read_line(&mut input)?;
                 if !input.trim().eq_ignore_ascii_case("y") {
-                    println!("{}", "Operation cancelled.".red());
+                    println!("{}", "Operation cancelled.");
                     return Ok(());
                 }
             }
             let pool = db::connect(&config.database).await?;
             db::wipe_data(&pool).await?;
-            println!(
-                "{}",
-                "Success: Database wiped. Starting fresh sync...".green()
-            );
+            println!("{}", "Success: Database wiped. Starting fresh sync...");
             run_sync(config, pool).await?;
         }
         Some(Commands::Status) => {
             let pool = db::connect(&config.database).await?;
             let stats = db::get_stats(&pool).await?;
-            println!("{}", "Indexer Status:".blue().bold());
+            println!("{}", "Indexer Status:");
             println!("   Events:      {}", stats.event_count);
             println!("   Checkpoints: {}", stats.checkpoint_count);
             if let Some(last) = stats.last_event_time {
@@ -182,7 +168,7 @@ async fn main() -> Result<(), anyhow::Error> {
         Some(Commands::Continue) => {
             send_signal(nix::sys::signal::Signal::SIGCONT, "CONTINUE")?;
         }
-        Some(Commands::Start) | None => {
+        Some(Commands::Start) | Some(Commands::Build) | None => {
             let pool = db::connect(&config.database).await?;
             run_sync(config, pool).await?;
         }
@@ -206,7 +192,7 @@ async fn run_sync(config: Config, pool: Pool<Postgres>) -> Result<(), anyhow::Er
     let metrics = Metrics::new();
     let _metrics_task = metrics.clone().start_reporting_task(60);
 
-    info!("{}", "Initializing Cardano Governance Indexer...".blue());
+    info!("{}", "Initializing Cardano Governance Indexer...");
     info!(
         "Configuration: Parallel workers={}, Batch size={}",
         config.processing.max_concurrent_workers, config.processing.batch_size
@@ -215,7 +201,7 @@ async fn run_sync(config: Config, pool: Pool<Postgres>) -> Result<(), anyhow::Er
 
     // 2. Load slot hashes
     let file = File::open(&config.processing.slot_hashes_file)
-        .with_context(|| format!("Failed to open {}", config.processing.slot_hashes_file).red())?;
+        .with_context(|| format!("Failed to open {}", config.processing.slot_hashes_file))?;
     let reader = BufReader::new(file);
     let mut slot_hashes = Vec::new();
 
@@ -236,7 +222,7 @@ async fn run_sync(config: Config, pool: Pool<Postgres>) -> Result<(), anyhow::Er
     );
 
     if slot_hashes.len() < 2 {
-        anyhow::bail!("Error: Need at least 2 slot hashes to define a range".red());
+        anyhow::bail!("Error: Need at least 2 slot hashes to define a range");
     }
 
     // 3. Plan sync
@@ -247,11 +233,11 @@ async fn run_sync(config: Config, pool: Pool<Postgres>) -> Result<(), anyhow::Er
     // 4. Get chain tip
     let mut peer = scanner::connect(&config.network.relay_address).await?;
     let _tip = peer.chainsync().intersect_tip().await?;
-    info!("{}", "Success: Connected to Cardano node".green());
+    info!("{}", "Success: Connected to Cardano node");
     peer.abort().await;
 
     // 5. Run Parallel Historical Sync
-    info!("{}", "Starting historical synchronization...".blue());
+    info!("{}", "Starting historical synchronization...");
 
     let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(
         config.processing.max_concurrent_workers,
@@ -302,7 +288,7 @@ async fn run_sync(config: Config, pool: Pool<Postgres>) -> Result<(), anyhow::Er
     while let Some(result) = stream.next().await {
         match result {
             Ok(Ok(events)) => total_events += events,
-            Ok(Err(_)) => error!("{}", "Error: Data synchronization worker failed".red()),
+            Ok(Err(_)) => error!("{}", "Error: Data synchronization worker failed"),
             Err(e) => error!("Error: Task join error - {:?}", e),
         }
     }
@@ -313,7 +299,6 @@ async fn run_sync(config: Config, pool: Pool<Postgres>) -> Result<(), anyhow::Er
             "Success: Historical synchronization complete. Total events: {}",
             total_events
         )
-        .green()
     );
 
     // 6. Continuous Sync
@@ -321,7 +306,7 @@ async fn run_sync(config: Config, pool: Pool<Postgres>) -> Result<(), anyhow::Er
     let last_hash = hex::decode(&slot_hashes.last().unwrap().1)?;
     let start_point = Point::Specific(last_slot, last_hash);
 
-    info!("{}", "Transitioning to real-time monitoring...".blue());
+    info!("{}", "Transitioning to real-time monitoring...");
     monitor::continuous_sync(&config.network.relay_address, pool, start_point, &config).await?;
 
     Ok(())

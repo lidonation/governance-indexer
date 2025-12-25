@@ -1,7 +1,6 @@
 use crate::config::DatabaseConfig;
 use crate::parser::GovEvent;
 use chrono::{DateTime, Utc};
-use colored::*;
 use lru::LruCache;
 use serde_json::json;
 use sqlx::postgres::PgPoolOptions;
@@ -21,7 +20,7 @@ fn get_delegation_cache() -> &'static Mutex<LruCache<String, String>> {
 }
 
 pub async fn connect(config: &DatabaseConfig) -> Result<Pool<Postgres>, anyhow::Error> {
-    info!("{}", "Database: Initializing connection pool...".blue());
+    info!("{}", "Database: Initializing connection pool...");
 
     let pool = PgPoolOptions::new()
         .max_connections(config.max_connections)
@@ -35,7 +34,7 @@ pub async fn connect(config: &DatabaseConfig) -> Result<Pool<Postgres>, anyhow::
 
     info!(
         "{} Connected with {} connections",
-        "Success:".green(),
+        "Success:",
         config.max_connections
     );
     Ok(pool)
