@@ -2,6 +2,7 @@ use crate::config::{NetworkConfig, cardano};
 use crate::db;
 use crate::parser;
 use chrono::{DateTime, TimeZone, Utc};
+use colored::*;
 use pallas::ledger::traverse::MultiEraBlock;
 use pallas::network::facades::PeerClient;
 use pallas::network::miniprotocols::Point;
@@ -43,7 +44,7 @@ pub async fn connect_with_config(
 
     loop {
         attempts += 1;
-        info!("Connection attempt {} to {}", attempts, address);
+        info!("Note: Connection attempt {} to {}", attempts, address);
 
         match tokio::time::timeout(
             Duration::from_secs(config.connection_timeout_secs),
@@ -53,7 +54,8 @@ pub async fn connect_with_config(
         {
             Ok(Ok(peer)) => {
                 info!(
-                    "✅ Connected to {} in {:?} (attempt {})",
+                    "{} Connected to {} in {:?} (attempt {})",
+                    "Success:".green(),
                     address,
                     start_time.elapsed(),
                     attempts
@@ -61,29 +63,40 @@ pub async fn connect_with_config(
                 return Ok(peer);
             }
             Ok(Err(e)) => {
-                warn!("❌ Connection failed to {}: {:?}", address, e);
+                warn!(
+                    "{} Connection failed to {}: {:?}",
+                    "Warning:".yellow(),
+                    address,
+                    e
+                );
             }
             Err(_) => {
                 warn!(
-                    "⏰ Connection timeout to {} after {}s",
-                    address, config.connection_timeout_secs
+                    "{} Connection timeout to {} after {}s",
+                    "Warning:".yellow(),
+                    address,
+                    config.connection_timeout_secs
                 );
             }
         }
 
         if attempts >= config.retry_attempts {
             return Err(anyhow::anyhow!(
-                "Failed to connect to {} after {} attempts in {:?}",
-                address,
-                attempts,
-                start_time.elapsed()
+                format!(
+                    "Error: Failed to connect to {} after {} attempts in {:?}",
+                    address,
+                    attempts,
+                    start_time.elapsed()
+                )
+                .red()
+                .to_string()
             ));
         }
 
         // Exponential backoff with jitter
         let delay = config.retry_delay_secs * (1 << (attempts - 1).min(5))
             + fastrand::u64(0..config.retry_delay_secs);
-        warn!("⏳ Retrying connection in {}s...", delay);
+        warn!("Note: Retrying connection in {}s...", delay);
         sleep(Duration::from_secs(delay)).await;
     }
 }
@@ -104,7 +117,7 @@ pub async fn worker(
             let last_hash = hex::decode(&last_hash_hex)?;
             let checkpoint_point = Point::Specific(last_slot, last_hash);
             info!(
-                "🔄 Worker {} resuming from checkpoint: slot {}",
+                "Note: Worker {} resuming from checkpoint at slot {}",
                 worker_id, last_slot
             );
             checkpoint_point
@@ -157,7 +170,7 @@ pub async fn worker(
 
         if block_count % 1000 == 0 {
             info!(
-                "📦 Worker {}: processed {} blocks, {} events. Current slot: {}",
+                "Status: Worker {} processed {} blocks, {} events (Current slot: {})",
                 worker_id, block_count, event_count, slot
             );
         }

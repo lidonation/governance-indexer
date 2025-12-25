@@ -1,2 +1,3 @@
 /target
 .env
+fetch_block_hashes.sh

@@ -46,4 +46,4 @@ COPY --from=builder /app/.env /app/.env
 ENV RUST_LOG=info
 
 # Run the binary
-CMD ["/app/rust-indexer"]
+CMD ["/app/rust-indexer", "start"]

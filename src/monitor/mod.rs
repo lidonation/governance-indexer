@@ -1,6 +1,7 @@
 use crate::config::{Config, cardano};
 use crate::{db, parser, scanner};
 use chrono::{DateTime, TimeZone, Utc};
+use colored::*;
 use pallas::network::miniprotocols::{Point, chainsync};
 use sqlx::{Pool, Postgres};
 use tokio::time::{Duration, sleep};
@@ -25,17 +26,24 @@ pub async fn continuous_sync(
     start_point: Point,
     config: &Config,
 ) -> Result<(), anyhow::Error> {
-    info!("🔄 Starting continuous sync from {:?}", start_point);
+    info!(
+        "Note: Starting continuous synchronization from {:?}",
+        start_point
+    );
 
     loop {
         match run_sync_iteration(relay, &pool, &start_point).await {
             Ok(new_tip) => {
-                info!("✅ Sync iteration complete. New tip: {:?}", new_tip);
+                info!(
+                    "{} Sync iteration complete. New tip: {:?}",
+                    "Success:".green(),
+                    new_tip
+                );
                 // Update start_point for next iteration would go here
                 // For now, we'll just wait and retry
             }
             Err(e) => {
-                error!("❌ Sync iteration failed: {:?}", e);
+                error!("{} Sync iteration failed: {:?}", "Error:".red(), e);
             }
         }
 
@@ -61,26 +69,21 @@ async fn run_sync_iteration(
     // Find intersection with our known point
     let intersection = client.find_intersect(vec![known_point.clone()]).await?;
 
-    info!("🔗 Found intersection: {:?}", intersection);
+    info!("Status: Found intersection: {:?}", intersection);
 
     let mut processed_count = 0;
     let mut last_point = known_point.clone();
 
-    // Process incoming blocks - chainsync state machine pattern
-    // Process incoming blocks - chainsync state machine pattern
-    // After find_intersect, we are in Idle state (Client Agency)
-    info!("🔄 Entering sync loop. State should be Idle.");
+    // Processing blocks - chainsync state machine pattern
+    info!("{}", "Status: Entering real-time monitoring loop".blue());
 
     loop {
-        // We have agency, so we request the next block
-        info!("📤 Sending RequestNext...");
-        client.request_next().await?;
-        info!("✅ RequestNext sent. State should now be Busy (waiting for response).");
-
-        // Now receive the response (Server has agency)
-        info!("📥 Waiting for response...");
-        let next = client.recv_while_must_reply().await?;
-        info!("✅ Response received.");
+        // In Pallas 0.33, request_next() sends the message AND blocks for the response,
+        // returning the NextResponse directly. Calling recv_while_must_reply() again
+        // would cause a protocol agency error.
+        info!("Note: Requesting next block...");
+        let next = client.request_next().await?;
+        info!("{}", "Success: Response received".green());
 
         match next {
             chainsync::NextResponse::RollForward(header_content, tip) => {
@@ -143,7 +146,11 @@ async fn run_sync_iteration(
                 if let Point::Specific(tip_slot, _) = tip.0 {
                     if let Point::Specific(current_slot, _) = &last_point {
                         if current_slot >= &tip_slot {
-                            info!("✅ Caught up to tip! Processed {} blocks", processed_count);
+                            info!(
+                                "{} Caught up to tip. Processed {} blocks",
+                                "Success:".green(),
+                                processed_count
+                            );
                             return Ok(last_point);
                         }
                     }
@@ -152,7 +159,7 @@ async fn run_sync_iteration(
                 // Loop will request next block at the start of next iteration
             }
             chainsync::NextResponse::RollBackward(point, _tip) => {
-                warn!("⚠️  Chain rollback to {:?}", point);
+                warn!("{} Chain rollback to {:?}", "Warning:".yellow(), point);
                 // In a production system, we'd need to handle rollbacks properly
                 // For now, we'll just log and continue
                 last_point = point;
@@ -161,7 +168,7 @@ async fn run_sync_iteration(
             }
             chainsync::NextResponse::Await => {
                 info!(
-                    "⏸️  No new blocks available. Processed {} blocks",
+                    "Note: No new blocks available. Processed {} blocks",
                     processed_count
                 );
                 return Ok(last_point);

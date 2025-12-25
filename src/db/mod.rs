@@ -1,6 +1,7 @@
 use crate::config::DatabaseConfig;
 use crate::parser::GovEvent;
 use chrono::{DateTime, Utc};
+use colored::*;
 use lru::LruCache;
 use serde_json::json;
 use sqlx::postgres::PgPoolOptions;
@@ -10,7 +11,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use tokio_retry::Retry;
 use tokio_retry::strategy::{ExponentialBackoff, jitter};
-use tracing::{error, info, warn};
+use tracing::info;
 
 /// Global cache for delegation lookups (stake_address -> previous_drep)
 static DELEGATION_CACHE: OnceLock<Mutex<LruCache<String, String>>> = OnceLock::new();
@@ -20,10 +21,7 @@ fn get_delegation_cache() -> &'static Mutex<LruCache<String, String>> {
 }
 
 pub async fn connect(config: &DatabaseConfig) -> Result<Pool<Postgres>, anyhow::Error> {
-    info!("Connecting to database with optimized pool settings...");
-    info!("  Max connections: {}", config.max_connections);
-    info!("  Min connections: {}", config.min_connections);
-    info!("  Acquire timeout: {}s", config.acquire_timeout_secs);
+    info!("{}", "Database: Initializing connection pool...".blue());
 
     let pool = PgPoolOptions::new()
         .max_connections(config.max_connections)
@@ -36,7 +34,8 @@ pub async fn connect(config: &DatabaseConfig) -> Result<Pool<Postgres>, anyhow::
         .await?;
 
     info!(
-        "✅ Connected to database with {} connections",
+        "{} Connected with {} connections",
+        "Success:".green(),
         config.max_connections
     );
     Ok(pool)
@@ -108,8 +107,8 @@ async fn insert_governance_event(
             sqlx::query(
                 r#"
                 INSERT INTO drep_timeline_event (
-                    event_type, timestamp, epoch, slot, tx_hash, tx_index, drep_id, metadata
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                    event_type, timestamp, epoch, slot, tx_hash, tx_index, drep_id, metadata, stake_address, previous_drep
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                 ON CONFLICT (tx_hash, tx_index) DO NOTHING
                 "#,
             )
@@ -121,6 +120,8 @@ async fn insert_governance_event(
             .bind(*tx_index as i32)
             .bind(drep_id)
             .bind(metadata)
+            .bind(Option::<String>::None)
+            .bind(Option::<String>::None)
             .execute(tx.as_mut())
             .await?;
         }
@@ -140,8 +141,8 @@ async fn insert_governance_event(
             sqlx::query(
                 r#"
                 INSERT INTO drep_timeline_event (
-                    event_type, timestamp, epoch, slot, tx_hash, tx_index, drep_id, metadata
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                    event_type, timestamp, epoch, slot, tx_hash, tx_index, drep_id, metadata, stake_address, previous_drep
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                 ON CONFLICT (tx_hash, tx_index) DO NOTHING
                 "#,
             )
@@ -153,6 +154,8 @@ async fn insert_governance_event(
             .bind(*tx_index as i32)
             .bind(drep_id)
             .bind(metadata)
+            .bind(Option::<String>::None)
+            .bind(Option::<String>::None)
             .execute(tx.as_mut())
             .await?;
         }
@@ -175,9 +178,9 @@ async fn insert_governance_event(
             } else {
                 let db_drep = sqlx::query_scalar::<_, Option<String>>(
                     r#"
-                    SELECT metadata->>'target_drep' as drep
+                    SELECT previous_drep
                     FROM drep_timeline_event
-                    WHERE metadata->>'stake_address' = $1
+                    WHERE stake_address = $1
                       AND event_type = 'delegation'
                     ORDER BY timestamp DESC
                     LIMIT 1
@@ -213,8 +216,8 @@ async fn insert_governance_event(
             sqlx::query(
                 r#"
                 INSERT INTO drep_timeline_event (
-                    event_type, timestamp, epoch, slot, tx_hash, tx_index, drep_id, metadata
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                    event_type, timestamp, epoch, slot, tx_hash, tx_index, drep_id, metadata, stake_address, previous_drep
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                 ON CONFLICT (tx_hash, tx_index) DO NOTHING
                 "#,
             )
@@ -226,6 +229,8 @@ async fn insert_governance_event(
             .bind(*tx_index as i32)
             .bind(drep_id)
             .bind(metadata)
+            .bind(stake_credential)
+            .bind(previous_drep)
             .execute(tx.as_mut())
             .await?;
         }
@@ -255,8 +260,8 @@ async fn insert_governance_event(
             sqlx::query(
                 r#"
                 INSERT INTO drep_timeline_event (
-                    event_type, timestamp, epoch, slot, tx_hash, tx_index, drep_id, metadata
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                    event_type, timestamp, epoch, slot, tx_hash, tx_index, drep_id, metadata, stake_address, previous_drep
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                 ON CONFLICT (tx_hash, tx_index) DO NOTHING
                 "#,
             )
@@ -268,6 +273,8 @@ async fn insert_governance_event(
             .bind(*tx_index as i32)
             .bind(Option::<String>::None)
             .bind(metadata)
+            .bind(Option::<String>::None) // stake_address
+            .bind(Option::<String>::None) // previous_drep
             .execute(tx.as_mut())
             .await?;
         }
@@ -310,8 +317,8 @@ async fn insert_governance_event(
             sqlx::query(
                 r#"
                 INSERT INTO drep_timeline_event (
-                    event_type, timestamp, epoch, slot, tx_hash, tx_index, drep_id, metadata
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                    event_type, timestamp, epoch, slot, tx_hash, tx_index, drep_id, metadata, stake_address, previous_drep
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                 ON CONFLICT (tx_hash, tx_index) DO NOTHING
                 "#,
             )
@@ -323,6 +330,8 @@ async fn insert_governance_event(
             .bind(*tx_index as i32)
             .bind(drep_id_value)
             .bind(metadata)
+            .bind(Option::<String>::None) // stake_address
+            .bind(Option::<String>::None) // previous_drep
             .execute(tx.as_mut())
             .await?;
         }
@@ -368,4 +377,37 @@ pub async fn update_checkpoint(
     .await?;
 
     Ok(())
+}
+pub async fn wipe_data(pool: &Pool<Postgres>) -> Result<(), anyhow::Error> {
+    sqlx::query("TRUNCATE TABLE drep_timeline_event, sync_checkpoint RESTART IDENTITY")
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub struct DbStats {
+    pub event_count: i64,
+    pub checkpoint_count: i64,
+    pub last_event_time: Option<DateTime<Utc>>,
+}
+
+pub async fn get_stats(pool: &Pool<Postgres>) -> Result<DbStats, anyhow::Error> {
+    let (event_count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM drep_timeline_event")
+        .fetch_one(pool)
+        .await?;
+
+    let (checkpoint_count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM sync_checkpoint")
+        .fetch_one(pool)
+        .await?;
+
+    let last_event_time: Option<(DateTime<Utc>,)> =
+        sqlx::query_as("SELECT MAX(timestamp) FROM drep_timeline_event")
+            .fetch_optional(pool)
+            .await?;
+
+    Ok(DbStats {
+        event_count,
+        checkpoint_count,
+        last_event_time: last_event_time.map(|t| t.0),
+    })
 }
