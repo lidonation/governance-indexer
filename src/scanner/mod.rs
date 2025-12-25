@@ -155,7 +155,7 @@ pub async fn worker(
 
         // Update checkpoint every block (or every N blocks for performance)
         // For simplicity during initial sync, we do it every block or after a batch
-        if block_count % 100 == 0 {
+        if block_count % 1000 == 0 {
             db::update_checkpoint(&pool, &worker_id, slot, &hash).await?;
         }
 

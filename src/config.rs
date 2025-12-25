@@ -54,7 +54,7 @@ impl Default for Config {
                 retry_delay_secs: 5,
             },
             processing: ProcessingConfig {
-                max_concurrent_workers: 20,
+                max_concurrent_workers: 10,
                 batch_size: 1000,
                 continuous_sync_interval_secs: 20,
                 slot_hashes_file: "slot_hashes.csv".to_string(),

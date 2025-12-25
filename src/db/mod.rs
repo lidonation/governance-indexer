@@ -16,26 +16,32 @@ use tracing::info;
 static DELEGATION_CACHE: OnceLock<Mutex<LruCache<String, String>>> = OnceLock::new();
 
 fn get_delegation_cache() -> &'static Mutex<LruCache<String, String>> {
-    DELEGATION_CACHE.get_or_init(|| Mutex::new(LruCache::new(NonZeroUsize::new(10000).unwrap())))
+    DELEGATION_CACHE.get_or_init(|| Mutex::new(LruCache::new(NonZeroUsize::new(100000).unwrap())))
 }
 
 pub async fn connect(config: &DatabaseConfig) -> Result<Pool<Postgres>, anyhow::Error> {
     info!("{}", "Database: Initializing connection pool...");
 
     let pool = PgPoolOptions::new()
-        .max_connections(config.max_connections)
+        .max_connections(config.max_connections + 5) // Add buffer for status/monitor
         .min_connections(config.min_connections)
         .acquire_timeout(Duration::from_secs(config.acquire_timeout_secs))
         .idle_timeout(Duration::from_secs(config.idle_timeout_secs))
         .max_lifetime(Duration::from_secs(config.max_lifetime_secs))
-        .test_before_acquire(true) // Ping connection before using it
+        .after_connect(|conn, _meta| {
+            Box::pin(async move {
+                sqlx::query("SET statement_timeout = '5s'")
+                    .execute(conn)
+                    .await?;
+                Ok(())
+            })
+        })
         .connect(&config.url)
         .await?;
 
     info!(
         "{} Connected with {} connections",
-        "Success:",
-        config.max_connections
+        "Success:", config.max_connections
     );
     Ok(pool)
 }
