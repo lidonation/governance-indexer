@@ -14,6 +14,8 @@ services:
 build-indexer-preview:
   stage: build
   image: docker:25.0.2-git
+  environment:
+    name: preview
   variables:
     DOCKER_DRIVER: overlay2
     REGISTRY_IMAGE: registry.2lovelaces.io/voltaire/governance-indexer
@@ -24,9 +26,9 @@ build-indexer-preview:
   - |
     echo "Building indexer preview image..."
 
-    cat $ENV_FILE_PREVIEW > .env
+    cat $ENV_FILE > .env
 
-    cat .env
+    cat $ENV_FILE
     ls -a
 
     docker build --network host -f $DOCKER_FILE \
@@ -42,6 +44,8 @@ build-indexer-preview:
 build-indexer-prod:
   stage: build
   image: docker:25.0.2-git
+  environment:
+    name: production
   variables:
     DOCKER_DRIVER: overlay2
     REGISTRY_IMAGE: registry.2lovelaces.io/voltaire/governance-indexer
@@ -54,7 +58,7 @@ build-indexer-prod:
 
     cat $ENV_FILE > .env
 
-    cat .env
+    echo .env
     ls -a
 
     docker build --network host -f $DOCKER_FILE \
