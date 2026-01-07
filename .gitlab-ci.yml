@@ -30,12 +30,12 @@ build-indexer-preview:
     ls -a
 
     docker build --network host -f $DOCKER_FILE \
-      -t "$REGISTRY_IMAGE-preview:$CI_PIPELINE_ID" \
-      -t "$REGISTRY_IMAGE-preview:latest" .
+      -t "$REGISTRY_IMAGE:preview-$CI_PIPELINE_ID" \
+      -t "$REGISTRY_IMAGE:preview-latest" .
 
     echo "Pushing preview image to registry..."
-    docker push "$REGISTRY_IMAGE-preview:latest"
-    docker push "$REGISTRY_IMAGE-preview:$CI_PIPELINE_ID"
+    docker push "$REGISTRY_IMAGE:preview-latest"
+    docker push "$REGISTRY_IMAGE:preview-$CI_PIPELINE_ID"
   rules:
     - if: '$CI_COMMIT_BRANCH != "main"'
 
@@ -58,11 +58,13 @@ build-indexer-prod:
     ls -a
 
     docker build --network host -f $DOCKER_FILE \
-      -t "$REGISTRY_IMAGE-prod:$CI_PIPELINE_ID" \
-      -t "$REGISTRY_IMAGE-prod:latest" .
+      -t "$REGISTRY_IMAGE:$CI_PIPELINE_ID" \
+      -t "$REGISTRY_IMAGE:latest" \
+      -t "$REGISTRY_IMAGE:prod" .
 
     echo "Pushing prod images to registry..."
-    docker push "$REGISTRY_IMAGE-prod:$CI_PIPELINE_ID"
-    docker push "$REGISTRY_IMAGE-prod:latest"
+    docker push "$REGISTRY_IMAGE:$CI_PIPELINE_ID"
+    docker push "$REGISTRY_IMAGE:latest"
+    docker push "$REGISTRY_IMAGE:prod"
   only:
   - main
