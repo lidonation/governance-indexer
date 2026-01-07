@@ -35,7 +35,7 @@ build-indexer-preview:
 
     echo "Pushing preview image to registry..."
     docker push "$REGISTRY_IMAGE:preview"
-    docker push "$REGISTRY_IMAGE:preview-$CI_PIPELINE_ID"
+    docker push "$REGISTRY_IMAGE:preview-$CI_PIPELINE_ID-preview"
   rules:
     - if: '$CI_COMMIT_BRANCH != "main"'
 
@@ -62,7 +62,7 @@ build-indexer-prod:
       -t "$REGISTRY_IMAGE:prod" .
 
     echo "Pushing prod images to registry..."
-    docker push "$REGISTRY_IMAGE:$CI_PIPELINE_ID"
+    docker push "$REGISTRY_IMAGE:$CI_PIPELINE_ID-prod"
     docker push "$REGISTRY_IMAGE:prod"
   only:
   - main
