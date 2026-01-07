@@ -11,7 +11,7 @@ services:
   alias: docker
   command: [ "--tls=false" ]
 
-build-indexer:
+build-indexer-preview:
   stage: build
   image: docker:25.0.2-git
   variables:
@@ -22,7 +22,33 @@ build-indexer:
   - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
   script:
   - |
-    echo "Building indexer image..."
+    echo "Building indexer preview image..."
+
+    cat $ENV_FILE_PREVIEW > .env
+
+    cat .env
+    ls -a
+
+    docker build --network host -f $DOCKER_FILE \
+      -t "$REGISTRY_IMAGE-preview:$CI_PIPELINE_ID" \
+      -t "$REGISTRY_IMAGE-preview:latest" .
+
+    echo "Pushing preview image to registry..."
+    docker push "$REGISTRY_IMAGE-preview:latest"
+    docker push "$REGISTRY_IMAGE-preview:$CI_PIPELINE_ID"
+
+build-indexer-prod:
+  stage: build
+  image: docker:25.0.2-git
+  variables:
+    DOCKER_DRIVER: overlay2
+    REGISTRY_IMAGE: registry.2lovelaces.io/voltaire/governance-indexer
+    DOCKER_FILE: Dockerfile
+  before_script:
+  - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
+  script:
+  - |
+    echo "Building indexer prod image..."
 
     cat $ENV_FILE > .env
 
@@ -31,10 +57,10 @@ build-indexer:
 
     docker build --network host -f $DOCKER_FILE \
       -t "$REGISTRY_IMAGE:$CI_PIPELINE_ID" \
-      -t "$REGISTRY_IMAGE:latest" .
+      -t "$REGISTRY_IMAGE-prod:latest" .
 
-    echo "Pushing image to registry..."
-    docker push "$REGISTRY_IMAGE:$CI_PIPELINE_ID"
-    docker push "$REGISTRY_IMAGE:latest"
+    echo "Pushing prod images to registry..."
+    docker push "$REGISTRY_IMAGE-prod:$CI_PIPELINE_ID"
+    docker push "$REGISTRY_IMAGE-prod:latest"
   only:
   - main
