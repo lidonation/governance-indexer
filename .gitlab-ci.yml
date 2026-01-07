@@ -36,6 +36,8 @@ build-indexer-preview:
     echo "Pushing preview image to registry..."
     docker push "$REGISTRY_IMAGE-preview:latest"
     docker push "$REGISTRY_IMAGE-preview:$CI_PIPELINE_ID"
+  rules:
+    - if: '$CI_COMMIT_BRANCH != "main"'
 
 build-indexer-prod:
   stage: build
