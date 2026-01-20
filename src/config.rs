@@ -57,7 +57,7 @@ impl Default for Config {
                 acquire_timeout_secs: 30,
                 idle_timeout_secs: 300,
                 max_lifetime_secs: 600,
-                retry_attempts: 10,
+                retry_attempts: 0,
                 retry_delay_secs: 5,
             },
             network: NetworkConfig {
