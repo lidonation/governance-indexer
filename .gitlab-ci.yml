@@ -7,13 +7,13 @@ stages:
 - build
 
 services:
-- name: docker:dind
+- name: docker:27-dind
   alias: docker
   command: [ "--tls=false" ]
 
 build-indexer-preview:
   stage: build
-  image: docker:25.0.2-git
+  image: docker:27-git
   environment:
     name: preview
   variables:
@@ -43,7 +43,7 @@ build-indexer-preview:
 
 build-indexer-prod:
   stage: build
-  image: docker:25.0.2-git
+  image: docker:27-git
   environment:
     name: production
   variables:
