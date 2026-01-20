@@ -22,28 +22,53 @@ fn get_delegation_cache() -> &'static Mutex<LruCache<String, String>> {
 pub async fn connect(config: &DatabaseConfig) -> Result<Pool<Postgres>, anyhow::Error> {
     info!("{}", "Database: Initializing connection pool...");
 
-    let pool = PgPoolOptions::new()
-        .max_connections(config.max_connections + 5) // Add buffer for status/monitor
-        .min_connections(config.min_connections)
-        .acquire_timeout(Duration::from_secs(config.acquire_timeout_secs))
-        .idle_timeout(Duration::from_secs(config.idle_timeout_secs))
-        .max_lifetime(Duration::from_secs(config.max_lifetime_secs))
-        .after_connect(|conn, _meta| {
-            Box::pin(async move {
-                sqlx::query("SET statement_timeout = '5s'")
-                    .execute(conn)
-                    .await?;
-                Ok(())
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        let pool_result = PgPoolOptions::new()
+            .max_connections(config.max_connections + 5) // Add buffer for status/monitor
+            .min_connections(config.min_connections)
+            .acquire_timeout(Duration::from_secs(config.acquire_timeout_secs))
+            .idle_timeout(Duration::from_secs(config.idle_timeout_secs))
+            .max_lifetime(Duration::from_secs(config.max_lifetime_secs))
+            .after_connect(|conn, _meta| {
+                Box::pin(async move {
+                    sqlx::query("SET statement_timeout = '5s'")
+                        .execute(conn)
+                        .await?;
+                    Ok(())
+                })
             })
-        })
-        .connect(&config.url)
-        .await?;
+            .connect(&config.url)
+            .await;
 
-    info!(
-        "{} Connected with {} connections",
-        "Success:", config.max_connections
-    );
-    Ok(pool)
+        match pool_result {
+            Ok(pool) => {
+                info!(
+                    "{} Connected with {} connections",
+                    "Success:", config.max_connections
+                );
+                return Ok(pool);
+            }
+            Err(e) => {
+                if config.retry_attempts > 0 && attempt >= config.retry_attempts {
+                    return Err(anyhow::anyhow!(
+                        "Failed to connect to database after {} attempts: {}",
+                        attempt,
+                        e
+                    ));
+                }
+
+                tracing::warn!(
+                    "Failed to connect to database (attempt {}): {}. Retrying in {}s...",
+                    attempt,
+                    e,
+                    config.retry_delay_secs
+                );
+                tokio::time::sleep(Duration::from_secs(config.retry_delay_secs)).await;
+            }
+        }
+    }
 }
 
 pub async fn persist_events(

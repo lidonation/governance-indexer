@@ -9,6 +9,18 @@ pub struct DatabaseConfig {
     pub acquire_timeout_secs: u64,
     pub idle_timeout_secs: u64,
     pub max_lifetime_secs: u64,
+    #[serde(default = "default_retry_attempts")]
+    pub retry_attempts: u32,
+    #[serde(default = "default_retry_delay_secs")]
+    pub retry_delay_secs: u64,
+}
+
+fn default_retry_attempts() -> u32 {
+    0
+}
+
+fn default_retry_delay_secs() -> u64 {
+    5
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -45,6 +57,8 @@ impl Default for Config {
                 acquire_timeout_secs: 30,
                 idle_timeout_secs: 300,
                 max_lifetime_secs: 600,
+                retry_attempts: 10,
+                retry_delay_secs: 5,
             },
             network: NetworkConfig {
                 relay_address: "backbone.mainnet.emurgornd.com:3001".to_string(),
@@ -157,6 +171,16 @@ impl Config {
                 .parse()
                 .map_err(|_| anyhow::anyhow!("Invalid DB_ACQUIRE_TIMEOUT_SECS: {}", timeout))?;
         }
+        if let Some(attempts) = get_env("DB_RETRY_ATTEMPTS") {
+            config.database.retry_attempts = attempts
+                .parse()
+                .map_err(|_| anyhow::anyhow!("Invalid DB_RETRY_ATTEMPTS: {}", attempts))?;
+        }
+        if let Some(delay) = get_env("DB_RETRY_DELAY_SECS") {
+            config.database.retry_delay_secs = delay
+                .parse()
+                .map_err(|_| anyhow::anyhow!("Invalid DB_RETRY_DELAY_SECS: {}", delay))?;
+        }
 
         // Network configuration
         if let Some(relay) = get_env("RELAY_ADDRESS") {
@@ -250,6 +274,11 @@ impl Config {
             "  DB Pool: max={}, min={}",
             self.database.max_connections,
             self.database.min_connections
+        );
+        tracing::info!(
+            "  DB Retry: attempts={} (0=infinite), delay={}s",
+            self.database.retry_attempts,
+            self.database.retry_delay_secs
         );
         tracing::info!("  Relay: {}", self.network.relay_address);
         tracing::info!("  Workers: {}", self.processing.max_concurrent_workers);

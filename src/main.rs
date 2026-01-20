@@ -341,12 +341,32 @@ async fn run_sync(config: Config, pool: Pool<Postgres>) -> Result<(), anyhow::Er
     );
 
     // 6. Continuous Sync
-    let last_slot = slot_hashes.last().unwrap().0;
-    let last_hash = hex::decode(&slot_hashes.last().unwrap().1)?;
-    let start_point = Point::Specific(last_slot, last_hash);
+    let worker_id = "continuous";
+
+    // Check if we have a checkpoint for continuous sync
+    let start_point =
+        if let Ok(Some((last_slot, last_hash_hex))) = db::get_checkpoint(&pool, worker_id).await {
+            let last_hash = hex::decode(&last_hash_hex)?;
+            info!(
+                "Note: Resuming continuous sync from checkpoint at slot {}",
+                last_slot
+            );
+            Point::Specific(last_slot, last_hash)
+        } else {
+            let last_slot = slot_hashes.last().unwrap().0;
+            let last_hash = hex::decode(&slot_hashes.last().unwrap().1)?;
+            Point::Specific(last_slot, last_hash)
+        };
 
     info!("{}", "Transitioning to real-time monitoring...");
-    monitor::continuous_sync(&config.network.relay_address, pool, start_point, &config).await?;
+    monitor::continuous_sync(
+        &config.network.relay_address,
+        pool,
+        start_point,
+        &config,
+        worker_id,
+    )
+    .await?;
 
     Ok(())
 }

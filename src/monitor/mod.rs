@@ -22,8 +22,9 @@ fn slot_to_epoch(slot: u64) -> u64 {
 pub async fn continuous_sync(
     relay: &str,
     pool: Pool<Postgres>,
-    start_point: Point,
+    mut start_point: Point,
     config: &Config,
+    worker_id: &str,
 ) -> Result<(), anyhow::Error> {
     info!(
         "Note: Starting continuous synchronization from {:?}",
@@ -31,14 +32,14 @@ pub async fn continuous_sync(
     );
 
     loop {
-        match run_sync_iteration(relay, &pool, &start_point).await {
+        match run_sync_iteration(relay, &pool, &start_point, worker_id).await {
             Ok(new_tip) => {
                 info!(
                     "{} Sync iteration complete. New tip: {:?}",
                     "Success:", new_tip
                 );
-                // Update start_point for next iteration would go here
-                // For now, we'll just wait and retry
+                // Update start_point for next iteration
+                start_point = new_tip;
             }
             Err(e) => {
                 error!("{} Sync iteration failed: {:?}", "Error:", e);
@@ -57,6 +58,7 @@ async fn run_sync_iteration(
     relay: &str,
     pool: &Pool<Postgres>,
     known_point: &Point,
+    worker_id: &str,
 ) -> Result<Point, anyhow::Error> {
     // Create separate connections for chainsync and blockfetch to avoid borrow conflicts
     let mut chainsync_peer = scanner::connect(relay).await?;
@@ -97,6 +99,7 @@ async fn run_sync_iteration(
                     let slot = header.slot();
                     let hash = header.hash();
                     let point = Point::Specific(slot, hash.to_vec());
+                    let hash_hex = hex::encode(hash);
 
                     // Fetch the full block body using a separate blockfetch connection
                     match blockfetch_peer
@@ -129,6 +132,13 @@ async fn run_sync_iteration(
                                 {
                                     error!("Failed to persist events: {:?}", e);
                                 }
+                            }
+
+                            // Checkpoint every block in continuous sync
+                            if let Err(e) =
+                                db::update_checkpoint(pool, worker_id, slot, &hash_hex).await
+                            {
+                                error!("Failed to update checkpoint: {:?}", e);
                             }
 
                             processed_count += 1;
