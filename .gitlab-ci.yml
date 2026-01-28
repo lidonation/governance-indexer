@@ -32,7 +32,7 @@ build-indexer-preview:
     ls -a
 
     docker build --network host -f $DOCKER_FILE \
-      -t "$REGISTRY_IMAGE:preview-$CI_PIPELINE_ID-preview" \
+      -t "$REGISTRY_IMAGE:$CI_PIPELINE_ID-preview" \
       -t "$REGISTRY_IMAGE:preview" .
 
     echo "Pushing preview image to registry..."
