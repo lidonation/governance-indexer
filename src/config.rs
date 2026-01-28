@@ -61,7 +61,7 @@ impl Default for Config {
                 retry_delay_secs: 5,
             },
             network: NetworkConfig {
-                relay_address: "backbone.mainnet.emurgornd.com:3001".to_string(),
+                relay_address: "relay1.lidonation.com:3011".to_string(),
                 connection_timeout_secs: 10,
                 magic: 764824073,
                 retry_attempts: 3,
