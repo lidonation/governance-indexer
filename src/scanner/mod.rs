@@ -23,19 +23,20 @@ fn slot_to_epoch(slot: u64) -> u64 {
     cardano::SHELLEY_START_EPOCH + epochs_since_shelley
 }
 
-pub async fn connect(address: &str) -> Result<PeerClient, anyhow::Error> {
+pub async fn connect(addresses: Vec<String>) -> Result<PeerClient, anyhow::Error> {
     let default_config = NetworkConfig {
-        relay_address: address.to_string(),
+        relay_address: addresses.first().cloned().unwrap_or_default(),
+        relays: addresses.clone(),
         connection_timeout_secs: 10,
         magic: 764824073,
         retry_attempts: 3,
         retry_delay_secs: 5,
     };
-    connect_with_config(address, &default_config).await
+    connect_with_config(addresses, &default_config).await
 }
 
 pub async fn connect_with_config(
-    address: &str,
+    addresses: Vec<String>,
     config: &NetworkConfig,
 ) -> Result<PeerClient, anyhow::Error> {
     let mut attempts = 0;
@@ -43,40 +44,43 @@ pub async fn connect_with_config(
 
     loop {
         attempts += 1;
-        info!("Note: Connection attempt {} to {}", attempts, address);
 
-        match tokio::time::timeout(
-            Duration::from_secs(config.connection_timeout_secs),
-            PeerClient::connect(address, config.magic.into()),
-        )
-        .await
-        {
-            Ok(Ok(peer)) => {
-                info!(
-                    "{} Connected to {} in {:?} (attempt {})",
-                    "Success:",
-                    address,
-                    start_time.elapsed(),
-                    attempts
-                );
-                return Ok(peer);
-            }
-            Ok(Err(e)) => {
-                warn!("{} Connection failed to {}: {:?}", "Warning:", address, e);
-            }
-            Err(_) => {
-                warn!(
-                    "{} Connection timeout to {} after {}s",
-                    "Warning:", address, config.connection_timeout_secs
-                );
+        for address in &addresses {
+            info!("Note: Connection attempt {} to {}", attempts, address);
+
+            match tokio::time::timeout(
+                Duration::from_secs(config.connection_timeout_secs),
+                PeerClient::connect(address, config.magic.into()),
+            )
+            .await
+            {
+                Ok(Ok(peer)) => {
+                    info!(
+                        "{} Connected to {} in {:?} (attempt {})",
+                        "Success:",
+                        address,
+                        start_time.elapsed(),
+                        attempts
+                    );
+                    return Ok(peer);
+                }
+                Ok(Err(e)) => {
+                    warn!("{} Connection failed to {}: {:?}", "Warning:", address, e);
+                }
+                Err(_) => {
+                    warn!(
+                        "{} Connection timeout to {} after {}s",
+                        "Warning:", address, config.connection_timeout_secs
+                    );
+                }
             }
         }
 
         if attempts >= config.retry_attempts {
             return Err(anyhow::anyhow!(
                 format!(
-                    "Error: Failed to connect to {} after {} attempts in {:?}",
-                    address,
+                    "Error: Failed to connect to any of {:?} after {} attempts in {:?}",
+                    addresses,
                     attempts,
                     start_time.elapsed()
                 )
@@ -96,7 +100,7 @@ pub async fn connect_with_config(
 
 pub async fn worker(
     range: (Point, Point),
-    address: String,
+    addresses: Vec<String>,
     pool: Pool<Postgres>,
     worker_id: String,
 ) -> Result<(u64, u64), anyhow::Error> {
@@ -116,7 +120,7 @@ pub async fn worker(
             start
         };
 
-    let mut peer = connect(&address).await?;
+    let mut peer = connect(addresses).await?;
     let client = peer.blockfetch();
 
     // Request the range - this initiates the streaming protocol

@@ -1,87 +1,128 @@
-# Cardano Governance Indexer (Rust Prototype)
+# Cardano Governance Indexer
 
-This is a prototype implementation of a high-performance governance indexer for Cardano (CIP-1694). It is designed to extract DRep registrations, retirements, votes, proposals, and delegations directly from a Cardano node using the Ouroboros mini-protocols.
+## 1. Overview
+The Governance Indexer is a high-performance system designed to index, store, and serve Cardano governance data in compliance with the **CIP-1694 Voltaire specification**. It acts as a bridge between the Cardano blockchain and the www.1694.io frontend, providing real-time data on DReps, governance actions, and voting activity.
 
-## Architecture
+## 2. Architecture (Rust Indexer)
 
-The system consists of:
-- A Rust-based indexer using the Pallas library.
-- A PostgreSQL database for persistent storage.
-- A hybrid synchronization strategy: parallel historical catch-up and real-time monitoring.
+The production system is built in **Rust** using the [Pallas](https://github.com/txpipe/pallas) library to communicate directly with Cardano nodes via Ouroboros mini-protocols (Node-to-Node).
 
-## System Requirements
-
-- Rust (latest stable or nightly)
-- PostgreSQL 16+
-- Docker and Docker Compose (optional, for containerized deployment)
-
-## Setup and Configuration
-
-Configure the system using a `.env` file or environment variables.
-
-### Database Settings
-- `DATABASE_URL`: PostgreSQL connection string.
-- `DB_MAX_CONNECTIONS`: Maximum pool size (default: 30).
-
-### Network Settings
-- `RELAY_ADDRESS`: Address of a Cardano relay (e.g., `backbone.mainnet.emurgornd.com:3001`).
-- `NETWORK_MAGIC`: Network identifier (e.g., 764824073 for Mainnet).
-
-### Processing Settings
-- `MAX_CONCURRENT_WORKERS`: Number of parallel workers for historical sync.
-- `BATCH_SIZE`: Number of events per database transaction.
-
-## Usage
-
-In development, you can use `cargo run`. In a production Docker or Kubernetes environment, call the `indexer` binary directly.
-
-### Process Management
-Management commands use a `.indexer.pid` file in the current directory to track the running instance.
-
-**Local Development:**
-```bash
-cargo run -- status
-cargo run -- stop
-cargo run -- pause
-cargo run -- continue
+```mermaid
+graph LR
+    Node[Cardano Node] -->|Ouroboros N2N| Indexer[Rust Indexer]
+    Indexer -->|Decodes Blocks| Parser[Gov Parser]
+    Parser -->|Extracts Events| DB[(PostgreSQL)]
+    DB -->|Queries| API[Frontend API]
 ```
 
-**Production (Docker / Kubernetes):**
-```bash
-# Docker
-docker exec -it <container_id> indexer status
+### Components
+*   **Scanner**: Connects to Cardano relays using Pallas. Supports **Parallel Historical Sync** (fast catch-up using workers) and **Continuous Sync** (monitoring chain tip).
+*   **Parser**: Extracts governance-specific certificates (`regDrepCert`, `voteDelegCert`, etc.) and transaction bodies (`txvote`, `txprop`) from raw block data.
+*   **Storage**: Normalizes data into a PostgreSQL schema optimized for timeline queries.
 
-# Kubernetes
-kubectl exec -it <pod_name> -- indexer status
+---
+
+## 3. Governance Specifications & Standards
+
+The indexer logic is strictly based on the following formal specifications and standards.
+
+### Core Business Logic
+*   **[Conway Ledger Formal Specification](https://github.com/IntersectMBO/cardano-ledger/tree/master/eras/conway/impl/README.md)**: Defines the rules for Delegate Representatives (DReps), Governance Actions, and Voting.
+    *   **GovActionID**: Unique ID (`TxId + Index`).
+    *   **Voter Roles**: CC (Constitutional Committee), DRep, SPO (Stake Pool Operator).
+    *   **Action Types**: NoConfidence, UpdateCommittee, NewConstitution, TriggerHF, ChangePParams, TreasuryWdrl, Info.
+
+### Relevant CIPs (Cardano Improvement Proposals)
+*   **[CIP-1694](https://github.com/cardano-foundation/CIPs/tree/master/CIP-1694)**: On-Chain Decentralized Governance.
+*   **[CIP-105](https://github.com/cardano-foundation/CIPs/tree/master/CIP-105)**: DRep ID Format.
+*   **[CIP-119](https://github.com/cardano-foundation/CIPs/tree/master/CIP-119)**: DRep Metadata Standards (JSON-LD).
+*   **[CIP-129](https://github.com/cardano-foundation/CIPs/tree/master/CIP-129)**: Governance Entity Bech32 Encoding.
+
+---
+
+## 4. Data Models & Schema
+
+The database is structured to support the **DRep Timeline** feature, which aggregates all events related to a DRep in chronological order.
+
+### Database Tables (PostgreSQL)
+
+#### `drep_timeline_event`
+The central table for all DRep activities.
+
+| Column | Type | Description |
+|Args|---|---|
+| `event_type` | `text` | `registration`, `delegation`, `voting_activity`, `retirement` |
+| `timestamp` | `timestamptz` | Block time of the event |
+| `epoch` | `bigint` | Cardano epoch number |
+| `slot` | `bigint` | Absolute slot number |
+| `tx_hash` | `text` | Transaction hash |
+| `drep_id` | `text` | DRep ID (CIP-105/129) |
+| `metadata` | `jsonb` | Event-specific payload (see below) |
+
+### Event Payloads (JSONB)
+
+**1. Registration**
+```json
+{
+  "drep_id": "drep1...",
+  "deposit": "500000000",
+  "anchor_url": "https://...",
+  "anchor_hash": "..."
+}
 ```
 
-### Data Management
-```bash
-indexer wipe
-indexer reset
+**2. Delegation**
+```json
+{
+  "stake_address": "stake1...",
+  "target_drep": "drep1...",
+  "previous_drep": "drep1... (or null)",
+  "added_power": true // true if delegation TO, false if FROM
+}
 ```
 
-## Docker Deployment
-
-To run the entire stack using Docker:
-
-```bash
-# Start database and indexer
-docker-compose up -d
-
-# View logs
-docker-compose logs -f indexer
-
-# Stop all services
-docker-compose down
+**3. Voting Activity**
+```json
+{
+  "vote": "Yes/No/Abstain",
+  "gov_action_proposal_id": "tx_hash",
+  "vote_rationale": "Reason derived from anchor url..."
+}
 ```
 
-## Status and Limitations
+---
 
-This project is a prototype. Current features include:
-- Denormalized schema for high-performance DRep timeline lookups.
-- LRU caching for delegation state.
-- Checkpointing for resilient synchronization across restarts.
-- Professional logging for monitoring.
+## 5. Configuration & Deployment
 
-Note: The indexer currently targets the Voltair preview and Mainnet networks based on provided boundary hashes.
+### Environment Variables
+Configure the indexer using a `.env` file or Docker environment variables.
+
+| Variable | Description | Default |
+|---|---|---|
+| `DATABASE_URL` | PostgreSQL Connection String | `postgres://user:pass@localhost:5432/db` |
+| `RELAY_ADDRESSES` | Comma-separated list of Cardano relays | `backbone.mainnet...:3001` |
+| `NETWORK_MAGIC` | Network identifier (Mainnet=764824073, Preview=2) | `764824073` |
+| `MAX_CONCURRENT_WORKERS` | Parallel workers for history sync | `10` |
+| `BATCH_SIZE` | DB transaction batch size | `1000` |
+
+### Running with Docker
+```bash
+docker run -d \
+  -e DATABASE_URL=postgres://user:pass@db:5432/govindex \
+  -e RELAY_ADDRESSES=relay1.com:3000,relay2.com:3000 \
+  gov-indexer:latest
+```
+
+### Local Development (Rust)
+```bash
+# Assuming you are in the rust-indexer directory
+cargo run -- start
+```
+Use `cargo run -- --help` to see all available commands (`wipe`, `reset`, `status`).
+
+---
+
+## 6. Legacy References
+*   Archived Python Prototype Spec: `[PHASE1_COMPLETE.md]` (Deleted)
+*   Original ETL Guide: `[IMPLEMENTATION_GUIDE.md]` (Deleted)
+*   *Note: These files have been consolidated into this document or deprecated in favor of the Rust implementation.*
