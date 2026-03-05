@@ -26,6 +26,7 @@ fn default_retry_delay_secs() -> u64 {
 #[derive(Debug, Clone, Deserialize)]
 pub struct NetworkConfig {
     pub relay_address: String,
+    pub relays: Vec<String>,
     pub connection_timeout_secs: u64,
     pub magic: u32,
     pub retry_attempts: u32,
@@ -61,7 +62,12 @@ impl Default for Config {
                 retry_delay_secs: 5,
             },
             network: NetworkConfig {
-                relay_address: "relay1.lidonation.com:3011".to_string(),
+                relay_address: "backbone.mainnet.emurgornd.com:3001".to_string(),
+                relays: vec![
+                    "backbone.mainnet.emurgornd.com:3001".to_string(),
+                    "relays-new.cardano-mainnet.iohk.io:3001".to_string(),
+                    "relay1.lidonation.com:3011".to_string(),
+                ],
                 connection_timeout_secs: 10,
                 magic: 764824073,
                 retry_attempts: 3,
@@ -183,15 +189,53 @@ impl Config {
         }
 
         // Network configuration
+        // 1. Try RELAY_ADDRESSES first (comma separated)
+        let mut relays = Vec::new();
+        if let Some(relay_list) = get_env("RELAY_ADDRESSES") {
+            tracing::info!(
+                "RELAY_ADDRESSES: loading from environment/dotenv ({})",
+                relay_list
+            );
+            relays = relay_list
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+        }
+
+        // 2. If RELAY_ADDRESS is set, add it (if not already present)
         if let Some(relay) = get_env("RELAY_ADDRESS") {
             tracing::info!("RELAY_ADDRESS: loading from environment/dotenv ({})", relay);
-            config.network.relay_address = relay;
-        } else {
+            // If it contains commas, treat it as a list too (backward compatibility)
+            if relay.contains(',') {
+                let extra: Vec<String> = relay
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                for r in extra {
+                    if !relays.contains(&r) {
+                        relays.push(r);
+                    }
+                }
+            } else if !relays.contains(&relay) {
+                relays.insert(0, relay); // Prepend single relay_address as primary
+            }
+        }
+
+        if relays.is_empty() {
             tracing::warn!(
                 "RELAY_ADDRESS: not found in environment, using hardcoded default: {}",
                 config.network.relay_address
             );
+            relays.push(config.network.relay_address.clone());
         }
+
+        // Update config
+        if let Some(first) = relays.first() {
+            config.network.relay_address = first.clone();
+        }
+        config.network.relays = relays;
 
         if let Some(timeout) = get_env("CONNECTION_TIMEOUT_SECS") {
             config.network.connection_timeout_secs = timeout
@@ -203,10 +247,10 @@ impl Config {
                 .parse()
                 .map_err(|_| anyhow::anyhow!("Invalid NETWORK_MAGIC: {}", magic))?;
         }
-        if let Some(attempts) = get_env("RETRY_ATTEMPTS") {
-            config.network.retry_attempts = attempts
+        if let Some(retry_attempts) = get_env("RETRY_ATTEMPTS") {
+            config.network.retry_attempts = retry_attempts
                 .parse()
-                .map_err(|_| anyhow::anyhow!("Invalid RETRY_ATTEMPTS: {}", attempts))?;
+                .map_err(|_| anyhow::anyhow!("Invalid RETRY_ATTEMPTS: {}", retry_attempts))?;
         }
 
         // Processing configuration
