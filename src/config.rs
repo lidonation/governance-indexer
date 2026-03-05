@@ -62,8 +62,12 @@ impl Default for Config {
                 retry_delay_secs: 5,
             },
             network: NetworkConfig {
-                relay_address: "relay1.lidonation.com:3011".to_string(),
-                relays: vec!["relay1.lidonation.com:3011".to_string()],
+                relay_address: "backbone.mainnet.emurgornd.com:3001".to_string(),
+                relays: vec![
+                    "backbone.mainnet.emurgornd.com:3001".to_string(),
+                    "relays-new.cardano-mainnet.iohk.io:3001".to_string(),
+                    "relay1.lidonation.com:3011".to_string(),
+                ],
                 connection_timeout_secs: 10,
                 magic: 764824073,
                 retry_attempts: 3,
