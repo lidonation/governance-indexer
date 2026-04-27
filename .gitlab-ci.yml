@@ -26,11 +26,6 @@ build-indexer-preview:
   - |
     echo "Building indexer preview image..."
 
-    cat $ENV_FILE > .env
-
-    cat $ENV_FILE
-    ls -a
-
     docker build --network host -f $DOCKER_FILE \
       -t "$REGISTRY_IMAGE:$CI_PIPELINE_ID-preview" \
       -t "$REGISTRY_IMAGE:preview" .
@@ -56,11 +51,6 @@ build-indexer-prod:
   script:
   - |
     echo "Building indexer prod image..."
-
-    cat $ENV_FILE > .env
-
-    echo .env
-    ls -a
 
     docker build --network host -f $DOCKER_FILE \
       -t "$REGISTRY_IMAGE:$CI_PIPELINE_ID-prod" \
