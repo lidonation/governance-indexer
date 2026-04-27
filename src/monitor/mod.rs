@@ -20,7 +20,7 @@ fn slot_to_epoch(slot: u64) -> u64 {
 }
 
 pub async fn continuous_sync(
-    relay: &str,
+    relays: Vec<String>,
     pool: Pool<Postgres>,
     mut start_point: Point,
     config: &Config,
@@ -32,7 +32,7 @@ pub async fn continuous_sync(
     );
 
     loop {
-        match run_sync_iteration(relay, &pool, &start_point, worker_id).await {
+        match run_sync_iteration(relays.clone(), &pool, &start_point, worker_id).await {
             Ok(new_tip) => {
                 info!(
                     "{} Sync iteration complete. New tip: {:?}",
@@ -43,6 +43,23 @@ pub async fn continuous_sync(
             }
             Err(e) => {
                 error!("{} Sync iteration failed: {:?}", "Error:", e);
+
+                // Try to recover latest checkpoint from DB to avoid re-processing blocks
+                match db::get_checkpoint(&pool, worker_id).await {
+                    Ok(Some((last_slot, last_hash_hex))) => {
+                        if let Ok(last_hash) = hex::decode(&last_hash_hex) {
+                            let new_point = Point::Specific(last_slot, last_hash);
+                            info!("Note: Recovered checkpoint from DB: {:?}", new_point);
+                            start_point = new_point;
+                        }
+                    }
+                    Ok(None) => {
+                        // No checkpoint found, keep using original start_point
+                    }
+                    Err(db_err) => {
+                        error!("Failed to fetch checkpoint during recovery: {:?}", db_err);
+                    }
+                }
             }
         }
 
@@ -55,14 +72,14 @@ pub async fn continuous_sync(
 }
 
 async fn run_sync_iteration(
-    relay: &str,
+    relays: Vec<String>,
     pool: &Pool<Postgres>,
     known_point: &Point,
     worker_id: &str,
 ) -> Result<Point, anyhow::Error> {
     // Create separate connections for chainsync and blockfetch to avoid borrow conflicts
-    let mut chainsync_peer = scanner::connect(relay).await?;
-    let mut blockfetch_peer = scanner::connect(relay).await?;
+    let mut chainsync_peer = scanner::connect(relays.clone()).await?;
+    let mut blockfetch_peer = scanner::connect(relays.clone()).await?;
 
     let client = chainsync_peer.chainsync();
 

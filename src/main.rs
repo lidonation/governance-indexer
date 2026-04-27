@@ -278,7 +278,7 @@ async fn run_sync(config: Config, pool: Pool<Postgres>, history_only: bool) -> R
     info!("Sync Plan: Slots {} to {}", start_slot, end_slot);
 
     // 4. Get chain tip
-    let mut peer = scanner::connect(&config.network.relay_address).await?;
+    let mut peer = scanner::connect(config.network.relays.clone()).await?;
     let _tip = peer.chainsync().intersect_tip().await?;
     info!("{}", "Success: Connected to Cardano node");
     peer.abort().await;
@@ -305,14 +305,14 @@ async fn run_sync(config: Config, pool: Pool<Postgres>, history_only: bool) -> R
             let end_point = Point::Specific(end_slot, end_hash);
 
             let pool = pool.clone();
-            let relay = config.network.relay_address.clone();
+            let relays = config.network.relays.clone();
             let worker_idx = i;
             let sem = semaphore.clone();
 
             tokio::spawn(async move {
                 let _permit = sem.acquire().await.unwrap();
                 let worker_id = format!("historical_{}", worker_idx);
-                match scanner::worker((start_point, end_point), relay, pool, worker_id).await {
+                match scanner::worker((start_point, end_point), relays, pool, worker_id).await {
                     Ok((blocks, events)) => {
                         info!(
                             "Worker {}: Completed ({} blocks, {} events)",
@@ -357,23 +357,37 @@ async fn run_sync(config: Config, pool: Pool<Postgres>, history_only: bool) -> R
     let worker_id = "continuous";
 
     // Check if we have a checkpoint for continuous sync
-    let start_point =
-        if let Ok(Some((last_slot, last_hash_hex))) = db::get_checkpoint(&pool, worker_id).await {
+    let start_point = if let Ok(Some((last_slot, last_hash_hex))) =
+        db::get_checkpoint(&pool, worker_id).await
+    {
+        let csv_last_slot = slot_hashes.last().unwrap().0;
+
+        // If checkpoint is behind our configured history, assume history sync handled it
+        // and jump to the end of the history plan.
+        if last_slot < csv_last_slot {
+            info!(
+                "Note: Continuous checkpoint (slot {}) is behind historical plan (slot {}). Fast-forwarding.",
+                last_slot, csv_last_slot
+            );
+            let last_hash = hex::decode(&slot_hashes.last().unwrap().1)?;
+            Point::Specific(csv_last_slot, last_hash)
+        } else {
             let last_hash = hex::decode(&last_hash_hex)?;
             info!(
                 "Note: Resuming continuous sync from checkpoint at slot {}",
                 last_slot
             );
             Point::Specific(last_slot, last_hash)
-        } else {
-            let last_slot = slot_hashes.last().unwrap().0;
-            let last_hash = hex::decode(&slot_hashes.last().unwrap().1)?;
-            Point::Specific(last_slot, last_hash)
-        };
+        }
+    } else {
+        let last_slot = slot_hashes.last().unwrap().0;
+        let last_hash = hex::decode(&slot_hashes.last().unwrap().1)?;
+        Point::Specific(last_slot, last_hash)
+    };
 
     info!("{}", "Transitioning to real-time monitoring...");
     monitor::continuous_sync(
-        &config.network.relay_address,
+        config.network.relays.clone(),
         pool,
         start_point,
         &config,
