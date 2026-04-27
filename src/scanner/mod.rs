@@ -72,7 +72,7 @@ pub async fn connect_with_config(
             }
         }
 
-        if attempts >= config.retry_attempts {
+        if config.retry_attempts > 0 && attempts >= config.retry_attempts {
             return Err(anyhow::anyhow!(
                 format!(
                     "Error: Failed to connect to {} after {} attempts in {:?}",
@@ -118,6 +118,25 @@ pub async fn worker(
 
     let mut peer = connect(&address).await?;
     let client = peer.blockfetch();
+    loop {
+        // Ignore checkpoint for historical worker to ensure no data is missed (sidecar logic)
+        let effective_start = start.clone();
+
+        let mut peer = match connect(addresses.clone()).await {
+            Ok(p) => p,
+            Err(e) => {
+                attempts += 1;
+                if attempts > 5 {
+                    return Err(e);
+                }
+                warn!("Worker {} connection failed. Retrying in 5s...", worker_id);
+                sleep(Duration::from_secs(5)).await;
+                continue;
+            }
+        };
+
+        // Use blockfetch for streaming the blocks
+        let client = peer.blockfetch();
 
     // Request the range - this initiates the streaming protocol
     match client
@@ -138,13 +157,15 @@ pub async fn worker(
     let mut block_count = 0;
     let mut event_count = 0;
 
-    // Stream blocks one at a time instead of loading all into memory
-    while let Some(body) = client.recv_while_streaming().await? {
-        let block = MultiEraBlock::decode(&body)?;
-        let slot = block.slot();
-        let hash = hex::encode(block.hash());
-        let timestamp = slot_to_timestamp(slot);
-        let epoch = slot_to_epoch(slot);
+        // Stream blocks one at a time instead of loading all into memory
+        loop {
+            match tokio::time::timeout(Duration::from_secs(60), client.recv_while_streaming()).await {
+                Ok(Ok(Some(body))) => {
+                    let block = MultiEraBlock::decode(&body)?;
+                    let slot = block.slot();
+                    let hash = hex::encode(block.hash());
+                    let timestamp = slot_to_timestamp(slot);
+                    let epoch = slot_to_epoch(slot);
 
         let events = parser::extract_governance(&body);
         if !events.is_empty() {
@@ -153,24 +174,48 @@ pub async fn worker(
         }
         block_count += 1;
 
-        // Update checkpoint every block (or every N blocks for performance)
-        // For simplicity during initial sync, we do it every block or after a batch
-        if block_count % 1000 == 0 {
-            db::update_checkpoint(&pool, &worker_id, slot, &hash).await?;
+                    // Update checkpoint periodically for performance
+                    if block_count % 1000 == 0 {
+                        db::update_checkpoint(&pool, &worker_id, slot, &hash).await?;
+                        info!(
+                            "Status: Worker {} processed {} blocks, {} events (Current slot: {})",
+                            worker_id, block_count, event_count, slot
+                        );
+                    }
+                }
+                Ok(Ok(None)) => {
+                    // Graceful end of stream
+                    break;
+                }
+                Ok(Err(e)) => {
+                    warn!(
+                        "Worker {} streaming failed (connection drop?): {:?}. Reconnecting...",
+                        worker_id, e
+                    );
+                    connection_dropped = true;
+                    break;
+                }
+                Err(_) => {
+                    warn!(
+                        "Worker {} streaming timed out. Reconnecting...",
+                        worker_id
+                    );
+                    connection_dropped = true;
+                    break;
+                }
+            }
         }
 
-        if block_count % 1000 == 0 {
-            info!(
-                "Status: Worker {} processed {} blocks, {} events (Current slot: {})",
-                worker_id, block_count, event_count, slot
-            );
+        if !connection_dropped {
+            // We successfully finished the requested range
+            if let Point::Specific(end_slot, end_hash) = &end {
+                db::update_checkpoint(&pool, &worker_id, *end_slot, &hex::encode(end_hash)).await?;
+            }
+            break;
+        } else {
+            // Wait before reconnecting to avoid spam
+            sleep(Duration::from_secs(5)).await;
         }
-    }
-
-    // Final checkpoint update
-    if let Some(body_opt) = client.recv_while_streaming().await.ok().flatten() {
-        let block = MultiEraBlock::decode(&body_opt)?;
-        db::update_checkpoint(&pool, &worker_id, block.slot(), &hex::encode(block.hash())).await?;
     }
 
     Ok((block_count, event_count))

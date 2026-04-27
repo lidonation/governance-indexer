@@ -82,7 +82,10 @@ async fn run_sync_iteration(
         // returning the NextResponse directly. Calling recv_while_must_reply() again
         // would cause a protocol agency error.
         info!("Note: Requesting next block...");
-        let next = client.request_next().await?;
+        let next = match tokio::time::timeout(Duration::from_secs(60), client.request_next()).await {
+            Ok(res) => res?,
+            Err(_) => return Err(anyhow::anyhow!("request_next timed out after 60s. Node connection stalled.")),
+        };
         info!("{}", "Success: Response received");
 
         match next {

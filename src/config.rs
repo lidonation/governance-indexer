@@ -64,7 +64,7 @@ impl Default for Config {
                 relay_address: "relay1.lidonation.com:3011".to_string(),
                 connection_timeout_secs: 10,
                 magic: 764824073,
-                retry_attempts: 3,
+                retry_attempts: 0,
                 retry_delay_secs: 5,
             },
             processing: ProcessingConfig {

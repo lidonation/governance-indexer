@@ -59,6 +59,8 @@ enum Commands {
     /// Continue/Resume the paused indexer process (SIGCONT)
     #[command(name = "continue")]
     Continue,
+    /// Run only the historical sidecar sync and then exit
+    SyncHistory,
     /// Alias for start (prototype use)
     Build,
 }
@@ -186,7 +188,7 @@ async fn main() -> Result<(), anyhow::Error> {
             let pool = db::connect(&config.database).await?;
             db::wipe_data(&pool).await?;
             println!("{}", "Success: Database wiped. Starting fresh sync...");
-            run_sync(config, pool).await?;
+            run_sync(config, pool, false).await?;
         }
         Some(Commands::Status) => {
             let pool = db::connect(&config.database).await?;
@@ -207,22 +209,28 @@ async fn main() -> Result<(), anyhow::Error> {
         Some(Commands::Continue) => {
             send_signal(nix::sys::signal::Signal::SIGCONT, "CONTINUE")?;
         }
+        Some(Commands::SyncHistory) => {
+            let pool = db::connect(&config.database).await?;
+            run_sync(config, pool, true).await?;
+        }
         Some(Commands::Start) | Some(Commands::Build) | None => {
             let pool = db::connect(&config.database).await?;
-            run_sync(config, pool).await?;
+            run_sync(config, pool, false).await?;
         }
     }
 
     Ok(())
 }
 
-async fn run_sync(config: Config, pool: Pool<Postgres>) -> Result<(), anyhow::Error> {
-    // Write PID file
-    let pid = std::process::id();
-    std::fs::write(PID_FILE, pid.to_string())?;
-
-    // Ensure PID file is removed on exit
-    let _pid_cleanup = PidCleanup;
+async fn run_sync(config: Config, pool: Pool<Postgres>, history_only: bool) -> Result<(), anyhow::Error> {
+    // Write PID file for long-running process
+    let _pid_cleanup = if !history_only {
+        let pid = std::process::id();
+        std::fs::write(PID_FILE, pid.to_string())?;
+        Some(PidCleanup)
+    } else {
+        None
+    };
 
     config.validate()?;
     config.log_summary();
@@ -339,6 +347,11 @@ async fn run_sync(config: Config, pool: Pool<Postgres>) -> Result<(), anyhow::Er
             total_events
         )
     );
+
+    if history_only {
+        info!("{}", "Success: History sync only requested. Exiting successfully.");
+        return Ok(());
+    }
 
     // 6. Continuous Sync
     let worker_id = "continuous";
