@@ -110,32 +110,6 @@ pub async fn worker(
     let mut attempts = 0;
 
     loop {
-        // Check for checkpoint
-        let effective_start = if let Ok(Some((last_slot, last_hash_hex))) =
-            db::get_checkpoint(&pool, &worker_id).await
-        {
-            let last_hash = hex::decode(&last_hash_hex)?;
-            let checkpoint_point = Point::Specific(last_slot, last_hash);
-
-            // If the checkpoint slot is past or equal to our end point slot, we're done
-            if let Point::Specific(end_slot, _) = &end {
-                if last_slot >= *end_slot {
-                    return Ok((block_count, event_count));
-                }
-            }
-
-            info!(
-                "Note: Worker {} resuming from checkpoint at slot {}",
-                worker_id, last_slot
-            );
-            checkpoint_point
-        } else {
-            start
-        };
-
-    let mut peer = connect(&address).await?;
-    let client = peer.blockfetch();
-    loop {
         // Ignore checkpoint for historical worker to ensure no data is missed (sidecar logic)
         let effective_start = start.clone();
 
