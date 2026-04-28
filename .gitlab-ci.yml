@@ -24,7 +24,7 @@ build-indexer-branch:
     name: preview
   variables:
     DOCKER_DRIVER: overlay2
-    DOCKER_FILE: rust-indexer/Dockerfile
+    DOCKER_FILE: Dockerfile
   before_script:
     - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
   script:
@@ -36,7 +36,7 @@ build-indexer-branch:
     docker build --network host -f $DOCKER_FILE \
       -t "$REGISTRY_IMAGE:$BRANCH_TAG" \
       -t "$REGISTRY_IMAGE:$SHA_TAG" \
-      rust-indexer/
+      .
 
     docker push "$REGISTRY_IMAGE:$BRANCH_TAG"
     docker push "$REGISTRY_IMAGE:$SHA_TAG"
@@ -54,7 +54,7 @@ build-indexer-prod:
     name: production
   variables:
     DOCKER_DRIVER: overlay2
-    DOCKER_FILE: rust-indexer/Dockerfile
+    DOCKER_FILE: Dockerfile
   before_script:
     - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
   script:
@@ -65,7 +65,7 @@ build-indexer-prod:
     docker build --network host -f $DOCKER_FILE \
       -t "$REGISTRY_IMAGE:latest" \
       -t "$REGISTRY_IMAGE:$SHA_TAG" \
-      rust-indexer/
+      .
 
     docker push "$REGISTRY_IMAGE:latest"
     docker push "$REGISTRY_IMAGE:$SHA_TAG"
