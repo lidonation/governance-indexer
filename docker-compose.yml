@@ -1,5 +1,4 @@
 services:
-  # PostgreSQL Database
   postgres:
     image: postgres:16-alpine
     container_name: governance-indexer-db
@@ -20,13 +19,40 @@ services:
     networks:
       - governance-network
 
-  # Rust Indexer Application
   indexer:
-    image: registry.2lovelaces.io/voltaire/governance-indexer
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
     container_name: governance-indexer-app
+    # Uses the pre-built binary when available (run `make build` first).
+    # Falls back to `cargo run --release` if the binary isn't in the volume yet.
+    # One-off commands:
+    #   make status | make monitor | make reconcile
+    #   docker compose run --rm indexer /build/target/release/indexer <cmd>
+    command:
+      - sh
+      - -c
+      - |
+        BIN=/build/target/release/indexer
+        if [ -f "$$BIN" ]; then
+          echo "Running pre-built binary..."
+          exec $$BIN start
+        else
+          echo "Binary not found — building with cargo (run 'make build' for faster starts)"
+          exec cargo run --release -- start
+        fi
     environment:
       DATABASE_URL: postgres://govindex:govindex@postgres:5432/govindex
       RUST_LOG: info
+      CARGO_TARGET_DIR: /build/target
+    volumes:
+      # Source code — needed for cargo fallback and slot_hashes.csv
+      - .:/app
+      # Cargo dependency cache
+      - cargo-registry:/usr/local/cargo/registry
+      - cargo-git:/usr/local/cargo/git
+      # Pre-built binary lives here (populated by `make build`)
+      - build-cache:/build/target
     depends_on:
       postgres:
         condition: service_healthy
@@ -36,7 +62,14 @@ services:
 
 volumes:
   postgres_data:
-    driver: local
+  # Explicit names so the Makefile can reference the same volumes directly
+  # without needing to know the docker compose project prefix.
+  cargo-registry:
+    name: governance-indexer-cargo-registry
+  cargo-git:
+    name: governance-indexer-cargo-git
+  build-cache:
+    name: governance-indexer-build
 
 networks:
   governance-network:

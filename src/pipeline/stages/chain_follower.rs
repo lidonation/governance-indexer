@@ -239,8 +239,8 @@ impl Worker<ChainFollowerStage> for ChainFollowerWorker {
                         stage.blocks_followed.inc(1);
                     }
                     Err(e) => {
-                        warn!("chain-follower: fetch_single failed at slot {}: {}", slot, e);
-                        // Don't fail the stage — missed blocks will be caught on reconnect.
+                        warn!("chain-follower: fetch_single failed at slot {}: {} — reconnecting", slot, e);
+                        return Err(WorkerError::Restart);
                     }
                 }
             }

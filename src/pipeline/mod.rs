@@ -14,6 +14,7 @@ use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 use crate::config::Config;
+use crate::db;
 use crate::pipeline::stages::{
     block_fetcher::HistoricalFetcherStage,
     chain_follower::ChainFollowerStage,
@@ -29,18 +30,42 @@ use gasket::retries;
 // Retry policies
 // ---------------------------------------------------------------------------
 
-fn network_policy() -> Policy {
+// Historical fetcher runs execute() for hours (spawns N tasks, joins all).
+// tick_timeout must be None or gasket kills the worker mid-sync.
+fn historical_fetch_policy() -> Policy {
     Policy {
-        tick_timeout: Some(Duration::from_secs(120)),
+        tick_timeout: None,
         bootstrap_retry: retries::Policy {
-            max_retries: 20,
-            backoff_unit: Duration::from_secs(2),
+            max_retries: usize::MAX,
+            backoff_unit: Duration::from_secs(5),
             backoff_factor: 2,
-            max_backoff: Duration::from_secs(60),
+            max_backoff: Duration::from_secs(120),
             dismissible: false,
         },
         work_retry: retries::Policy {
-            max_retries: 10,
+            max_retries: usize::MAX,
+            backoff_unit: Duration::from_secs(5),
+            backoff_factor: 2,
+            max_backoff: Duration::from_secs(120),
+            dismissible: false,
+        },
+        teardown_retry: retries::Policy::no_retry(),
+    }
+}
+
+// Continuous chain follower: each tick is bounded (60s request_next timeout + sleep).
+fn network_policy() -> Policy {
+    Policy {
+        tick_timeout: Some(Duration::from_secs(180)),
+        bootstrap_retry: retries::Policy {
+            max_retries: usize::MAX,
+            backoff_unit: Duration::from_secs(5),
+            backoff_factor: 2,
+            max_backoff: Duration::from_secs(120),
+            dismissible: false,
+        },
+        work_retry: retries::Policy {
+            max_retries: usize::MAX,
             backoff_unit: Duration::from_secs(5),
             backoff_factor: 2,
             max_backoff: Duration::from_secs(120),
@@ -52,13 +77,13 @@ fn network_policy() -> Policy {
 
 fn db_policy() -> Policy {
     Policy {
-        tick_timeout: Some(Duration::from_secs(60)),
+        tick_timeout: Some(Duration::from_secs(120)),
         bootstrap_retry: retries::Policy::no_retry(),
         work_retry: retries::Policy {
-            max_retries: 5,
-            backoff_unit: Duration::from_secs(1),
+            max_retries: usize::MAX,
+            backoff_unit: Duration::from_secs(2),
             backoff_factor: 2,
-            max_backoff: Duration::from_secs(30),
+            max_backoff: Duration::from_secs(60),
             dismissible: false,
         },
         teardown_retry: retries::Policy::no_retry(),
@@ -127,19 +152,50 @@ pub fn run_historical_pipeline(
     pool: PgPool,
     ranges: Vec<EpochRange>,
 ) -> anyhow::Result<()> {
+    // Skip ranges already completed in a previous run.
+    // Called from spawn_blocking so block_on is safe here.
+    let handle = tokio::runtime::Handle::current();
+    let completed = handle.block_on(crate::db::get_historical_checkpoints(&pool))?;
+
+    let total = ranges.len();
+    let ranges: Vec<EpochRange> = ranges
+        .into_iter()
+        .filter(|r| {
+            let done_slot = completed.get(&r.worker_id).copied().unwrap_or(0);
+            let end_slot = match &r.end {
+                Point::Specific(s, _) => *s,
+                Point::Origin => 0,
+            };
+            let skip = done_slot >= end_slot;
+            if skip {
+                info!("resume: skipping completed range {} (slot {})", r.worker_id, done_slot);
+            }
+            !skip
+        })
+        .collect();
+
+    if ranges.is_empty() {
+        info!("all {} historical ranges already completed — skipping to continuous sync", total);
+        return Ok(());
+    }
+
+    info!("{}/{} historical ranges remaining", ranges.len(), total);
+
     let n = config.processing.max_concurrent_workers;
     let partitions = partition_ranges(ranges, n);
 
+    // Large buffers so N fetcher workers don't stall waiting for the single parser/sink.
     // Channel: HistoricalFetcher → GovernanceParser
-    let (raw_tx, raw_rx) = mpsc::channel(128);
-    // Channel: GovernanceParser → EventSink
-    let (event_tx, event_rx) = mpsc::channel(128);
+    let (raw_tx, raw_rx) = mpsc::channel(1024);
+    // Channel: GovernanceParser → EventSink (much smaller — only blocks with events pass through)
+    let (event_tx, event_rx) = mpsc::channel(256);
 
     let fetcher = HistoricalFetcherStage {
         partitioned_ranges: partitions,
         relay_addresses: config.network.relays.clone(),
         magic: config.network.magic as u64,
         output: raw_tx,
+        pool: pool.clone(),
         blocks_fetched: Counter::default(),
         ranges_completed: Counter::default(),
     };
@@ -160,7 +216,7 @@ pub fn run_historical_pipeline(
     };
 
     // Spawn stages — each runs in its own thread with a single-threaded tokio runtime.
-    let fetcher_tether = spawn_stage(fetcher, network_policy());
+    let fetcher_tether = spawn_stage(fetcher, historical_fetch_policy());
     let parser_tether = spawn_stage(parser, pure_policy());
     let sink_tether = spawn_stage(sink, db_policy());
 

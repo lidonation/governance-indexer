@@ -15,9 +15,6 @@ COPY Cargo.toml Cargo.lock ./
 # Copy source code
 COPY src ./src
 COPY slot_hashes.csv ./
-COPY .env ./
-
-RUN cat .env
 
 # Build for release
 RUN cargo build --release
@@ -38,9 +35,6 @@ COPY --from=builder /app/target/release/indexer /usr/local/bin/indexer
 
 # Copy the slot_hashes.csv file
 COPY --from=builder /app/slot_hashes.csv /app/slot_hashes.csv
-
-# Copy the .env file
-COPY --from=builder /app/.env /app/.env
 
 # Set environment
 ENV RUST_LOG=info

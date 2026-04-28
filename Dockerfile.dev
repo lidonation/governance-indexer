@@ -1,0 +1,15 @@
+# Dev runtime image — same base as the production builder so the toolchain
+# and system libraries always match.  The binary is pre-compiled by `make build`
+# and served from the build-cache volume; cargo is only invoked as a fallback
+# when the binary doesn't exist yet.
+FROM rustlang/rust:nightly-slim
+
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+ENV CARGO_TARGET_DIR=/build/target

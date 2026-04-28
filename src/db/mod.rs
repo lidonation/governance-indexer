@@ -332,6 +332,23 @@ async fn insert_governance_event(
     Ok(())
 }
 
+/// Load all historical range checkpoints in one query.
+/// Returns a map of worker_id → last completed slot.
+pub async fn get_historical_checkpoints(
+    pool: &Pool<Postgres>,
+) -> anyhow::Result<std::collections::HashMap<String, u64>> {
+    let rows = sqlx::query_as::<_, (String, i64)>(
+        "SELECT worker_id, last_slot FROM sync_checkpoint WHERE worker_id LIKE 'historical_%'",
+    )
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|(id, slot)| (id, slot as u64))
+        .collect())
+}
+
 pub async fn get_checkpoint(
     pool: &Pool<Postgres>,
     worker_id: &str,
@@ -419,6 +436,12 @@ pub async fn persist_parsed_block(
     let timestamp = block.timestamp;
 
     let mut tx = pool.begin().await?;
+
+    // Skip WAL flush wait — safe because inserts are idempotent (ON CONFLICT DO NOTHING).
+    // Postgres still commits in shared memory; a crash just means re-processing from checkpoint.
+    sqlx::query("SET LOCAL synchronous_commit = off")
+        .execute(tx.as_mut())
+        .await?;
 
     for event in &block.events {
         insert_governance_event(&mut tx, event, timestamp, epoch, slot).await?;

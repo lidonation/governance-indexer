@@ -1,11 +1,15 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
+use hex;
 use pallas::ledger::traverse::MultiEraBlock;
 use pallas::network::facades::PeerClient;
+use pallas::network::miniprotocols::Point;
+use sqlx::PgPool;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
+use crate::db;
 use crate::pipeline::types::{EpochRange, RawBlock};
 use crate::utils::{slot_to_epoch, slot_to_timestamp};
 use gasket::framework::{AsWorkError, Stage, WorkSchedule, Worker, WorkerError};
@@ -22,6 +26,7 @@ pub struct HistoricalFetcherStage {
     pub magic: u64,
     /// Sends RawBlocks downstream to GovernanceParser.
     pub output: mpsc::Sender<RawBlock>,
+    pub pool: PgPool,
     pub blocks_fetched: Counter,
     pub ranges_completed: Counter,
 }
@@ -78,27 +83,36 @@ impl Worker<HistoricalFetcherStage> for HistoricalFetcherWorker {
     ) -> Result<(), WorkerError> {
         let mut handles = Vec::new();
 
-        for partition in stage.partitioned_ranges.iter() {
+        for (i, partition) in stage.partitioned_ranges.iter().enumerate() {
             if partition.is_empty() {
                 continue;
             }
 
             let ranges = partition.clone();
-            let relays = stage.relay_addresses.clone();
             let magic = stage.magic;
             let output = stage.output.clone();
+            let pool = stage.pool.clone();
             let blocks_counter = stage.blocks_fetched.clone();
             let ranges_counter = stage.ranges_completed.clone();
 
+            // Rotate relay list per partition so workers spread across different relays
+            // instead of all hammering the same primary relay.
+            let mut relays = stage.relay_addresses.clone();
+            if relays.len() > 1 {
+                let n = relays.len();
+                relays.rotate_left(i % n);
+            }
+
             let handle = tokio::spawn(async move {
-                fetch_partition(ranges, relays, magic, output, blocks_counter, ranges_counter).await
+                fetch_partition(ranges, relays, magic, output, blocks_counter, ranges_counter, pool)
+                    .await
             });
 
             handles.push(handle);
         }
 
         for handle in handles {
-            handle.await.or_panic()?.or_retry()?;
+            handle.await.or_restart()?.or_retry()?;
         }
 
         Ok(())
@@ -136,10 +150,24 @@ async fn fetch_partition(
     output: mpsc::Sender<RawBlock>,
     blocks_counter: Counter,
     ranges_counter: Counter,
+    pool: PgPool,
 ) -> anyhow::Result<()> {
     for range in &ranges {
         fetch_range(range, &relays, magic, &output, &blocks_counter).await?;
         ranges_counter.inc(1);
+
+        // Persist a checkpoint so restart can skip completed ranges.
+        if let Point::Specific(slot, hash) = &range.end {
+            let hash_hex = hex::encode(hash);
+            if let Err(e) = db::update_checkpoint(&pool, &range.worker_id, *slot, &hash_hex).await
+            {
+                warn!(
+                    "failed to write checkpoint for {}: {}",
+                    range.worker_id, e
+                );
+                // Non-fatal — range is done, we just can't persist the progress marker.
+            }
+        }
     }
     Ok(())
 }
@@ -159,11 +187,13 @@ async fn fetch_range(
         let mut peer = match connect_relay(relays, magic).await {
             Ok(p) => p,
             Err(e) => {
-                if attempts > 5 {
-                    return Err(e);
-                }
-                warn!("worker {} relay connect failed, retrying in 5s", range.worker_id);
-                tokio::time::sleep(Duration::from_secs(5)).await;
+                // Exponential backoff, capped at 2 minutes. Never give up.
+                let sleep_secs = (5u64 * 2u64.pow((attempts as u32).saturating_sub(1).min(5))).min(120);
+                warn!(
+                    "worker {}: relay connect failed (attempt {}), retrying in {}s: {}",
+                    range.worker_id, attempts, sleep_secs, e
+                );
+                tokio::time::sleep(Duration::from_secs(sleep_secs)).await;
                 continue;
             }
         };
@@ -181,8 +211,12 @@ async fn fetch_range(
                     info!("worker {}: empty range, skipping", range.worker_id);
                     return Ok(());
                 }
-                warn!("worker {}: request_range failed: {:?}", range.worker_id, e);
-                tokio::time::sleep(Duration::from_secs(5)).await;
+                let sleep_secs = (5u64 * 2u64.pow((attempts as u32).saturating_sub(1).min(5))).min(120);
+                warn!(
+                    "worker {}: request_range failed (attempt {}), retrying in {}s: {:?}",
+                    range.worker_id, attempts, sleep_secs, e
+                );
+                tokio::time::sleep(Duration::from_secs(sleep_secs)).await;
                 continue;
             }
         }

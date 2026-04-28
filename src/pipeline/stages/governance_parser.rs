@@ -61,13 +61,23 @@ impl Worker<GovernanceParserStage> for GovernanceParserWorker {
         unit: &RawBlock,
         stage: &mut GovernanceParserStage,
     ) -> Result<(), WorkerError> {
-        let events = parser::extract_governance(&unit.body);
-
-        if events.is_empty() && unit.body.is_empty() {
+        if unit.body.is_empty() {
             warn!("empty block body at slot {}", unit.slot);
+            stage.blocks_parsed.inc(1);
+            return Ok(());
         }
 
+        let events = parser::extract_governance(&unit.body);
         let event_count = events.len();
+
+        stage.blocks_parsed.inc(1);
+
+        // Skip blocks with no governance events — don't waste channel + sink capacity.
+        if events.is_empty() {
+            return Ok(());
+        }
+
+        stage.events_found.inc(event_count as u64);
 
         let parsed = ParsedBlock {
             slot: unit.slot,
@@ -81,9 +91,6 @@ impl Worker<GovernanceParserStage> for GovernanceParserWorker {
             .send(ChainEvent::Block(parsed))
             .await
             .map_err(|_| WorkerError::Send)?;
-
-        stage.blocks_parsed.inc(1);
-        stage.events_found.inc(event_count as u64);
 
         Ok(())
     }

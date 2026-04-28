@@ -238,7 +238,7 @@ async fn main() -> Result<(), anyhow::Error> {
         }
         Some(Commands::Start) | Some(Commands::Build) | None => {
             let pool = db::connect(&config.database).await?;
-            run_sync(config, pool).await?;
+            run_sync(config, pool, false).await?;
         }
     }
 
