@@ -2,46 +2,51 @@ variables:
   DOCKER_TLS_CERTDIR: ""
   DOCKER_HOST: tcp://docker:2375/
   DOCKER_DRIVER: overlay2
+  REGISTRY_IMAGE: registry.2lovelaces.io/voltaire/governance-indexer
 
 stages:
 - build
+- deploy
 
 services:
 - name: docker:24-dind
   alias: docker
   command: [ "--tls=false" ]
 
-build-indexer-preview:
+# Builds on any non-main branch.
+# Tags: :<branch-slug>  (e.g. :dev, :feature-xyz) + :<branch-slug>-<sha7>
+# The branch-slug tag is what Helm deploys — it tracks the branch tip.
+# The sha tag is immutable — you can always roll back to an exact commit.
+build-indexer-branch:
   stage: build
   image: docker:24.0.7-dind-alpine3.18
   environment:
     name: preview
   variables:
     DOCKER_DRIVER: overlay2
-    REGISTRY_IMAGE: registry.2lovelaces.io/voltaire/governance-indexer
-    DOCKER_FILE: Dockerfile
+    DOCKER_FILE: rust-indexer/Dockerfile
   before_script:
     - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
   script:
   - |
-    echo "Building indexer preview image..."
-
-    cat $ENV_FILE > .env
-
-    cat $ENV_FILE
-    ls -a
+    BRANCH_TAG="$CI_COMMIT_REF_SLUG"
+    SHA_TAG="$CI_COMMIT_REF_SLUG-$CI_COMMIT_SHORT_SHA"
+    echo "Building branch image: $BRANCH_TAG ($SHA_TAG)"
 
     docker build --network host -f $DOCKER_FILE \
-      -t "$REGISTRY_IMAGE:$CI_PIPELINE_ID-preview" \
-      -t "$REGISTRY_IMAGE:preview" .
+      -t "$REGISTRY_IMAGE:$BRANCH_TAG" \
+      -t "$REGISTRY_IMAGE:$SHA_TAG" \
+      rust-indexer/
 
-    echo "Pushing preview image to registry..."
-    docker push "$REGISTRY_IMAGE:$CI_PIPELINE_ID-preview"
-    docker push "$REGISTRY_IMAGE:preview"
+    docker push "$REGISTRY_IMAGE:$BRANCH_TAG"
+    docker push "$REGISTRY_IMAGE:$SHA_TAG"
+    echo "Pushed $REGISTRY_IMAGE:$BRANCH_TAG and :$SHA_TAG"
   rules:
-    - if: '$CI_COMMIT_BRANCH != "main"'
-    - when: manual
+    - if: '$CI_COMMIT_BRANCH && $CI_COMMIT_BRANCH != "main"'
 
+# Builds on main only.
+# Tags: :latest + :<sha7>
+# Helm prod deploys :latest; the sha tag pins a specific release.
 build-indexer-prod:
   stage: build
   image: docker:24.0.7-dind-alpine3.18
@@ -49,26 +54,63 @@ build-indexer-prod:
     name: production
   variables:
     DOCKER_DRIVER: overlay2
-    REGISTRY_IMAGE: registry.2lovelaces.io/voltaire/governance-indexer
-    DOCKER_FILE: Dockerfile
+    DOCKER_FILE: rust-indexer/Dockerfile
   before_script:
     - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
   script:
   - |
-    echo "Building indexer prod image..."
-
-    cat $ENV_FILE > .env
-
-    echo .env
-    ls -a
+    SHA_TAG="$CI_COMMIT_SHORT_SHA"
+    echo "Building prod image: latest ($SHA_TAG)"
 
     docker build --network host -f $DOCKER_FILE \
-      -t "$REGISTRY_IMAGE:$CI_PIPELINE_ID-prod" \
-      -t "$REGISTRY_IMAGE:prod" .
+      -t "$REGISTRY_IMAGE:latest" \
+      -t "$REGISTRY_IMAGE:$SHA_TAG" \
+      rust-indexer/
 
-    echo "Pushing prod images to registry..."
-    docker push "$REGISTRY_IMAGE:$CI_PIPELINE_ID-prod"
-    docker push "$REGISTRY_IMAGE:prod"
+    docker push "$REGISTRY_IMAGE:latest"
+    docker push "$REGISTRY_IMAGE:$SHA_TAG"
+    echo "Pushed $REGISTRY_IMAGE:latest and :$SHA_TAG"
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
-    - when: manual
+
+# any non-main branch → deploy :<branch-slug> to preview
+trigger-deploy-preview-dev:
+  stage: deploy
+  needs: [build-indexer-branch]
+  trigger:
+    project: voltaire/www.1694.io
+    branch: dev
+    strategy: depend
+  variables:
+    INDEXER_TAG: $CI_COMMIT_REF_SLUG
+    INDEXER_SHA: $CI_COMMIT_SHORT_SHA
+  rules:
+    - if: '$CI_COMMIT_BRANCH && $CI_COMMIT_BRANCH != "main"'
+
+# main push → deploy :latest to preview first, then prod picks it up
+trigger-deploy-preview-main:
+  stage: deploy
+  needs: [build-indexer-prod]
+  trigger:
+    project: voltaire/www.1694.io
+    branch: dev
+    strategy: depend
+  variables:
+    INDEXER_TAG: latest
+    INDEXER_SHA: $CI_COMMIT_SHORT_SHA
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+# After preview passes, deploy :latest to production
+trigger-deploy-prod:
+  stage: deploy
+  needs: [build-indexer-prod]
+  trigger:
+    project: voltaire/www.1694.io
+    branch: main
+    strategy: depend
+  variables:
+    INDEXER_TAG: latest
+    INDEXER_SHA: $CI_COMMIT_SHORT_SHA
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
