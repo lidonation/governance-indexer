@@ -30,7 +30,6 @@ pub struct NetworkConfig {
     pub connection_timeout_secs: u64,
     pub magic: u32,
     pub retry_attempts: u32,
-    pub retry_delay_secs: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -70,8 +69,7 @@ impl Default for Config {
                 ],
                 connection_timeout_secs: 10,
                 magic: 764824073,
-                retry_attempts: 3,
-                retry_delay_secs: 5,
+                retry_attempts: 0,
             },
             processing: ProcessingConfig {
                 max_concurrent_workers: 10,

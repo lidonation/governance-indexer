@@ -14,14 +14,15 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sqlx = { version = "0.7", features = ["postgres", "runtime-tokio-native-tls", "macros", "chrono"] }
 dotenvy = "0.15"
-futures = "0.3"
 bech32 = "0.9"
 reqwest = { version = "0.11", features = ["json", "rustls-tls"] }
 chrono = { version = "0.4", features = ["serde"] }
 fastrand = "2.0"
 url = "2.5"
 lru = "0.12"
-tokio-retry = "0.3"
-clap = { version = "4.4", features = ["derive"] }
+clap = { version = "4.4", features = ["derive", "env"] }
 nix = { version = "0.27", features = ["signal", "process"] }
 sysinfo = "0.30"
+gasket = { version = "0.9", features = ["derive"] }
+async-trait = "0.1"
+signal-hook = "0.3"

@@ -90,7 +90,10 @@ pub fn extract_governance(block_bytes: &[u8]) -> Vec<GovEvent> {
 
     let block = match MultiEraBlock::decode(block_bytes) {
         Ok(b) => b,
-        Err(_) => return events,
+        Err(e) => {
+            tracing::warn!("block decode failed in extract_governance: {}", e);
+            return events;
+        }
     };
 
     for tx in block.txs() {
@@ -191,7 +194,9 @@ pub fn extract_governance(block_bytes: &[u8]) -> Vec<GovEvent> {
             // Proposals
             if let Some(proposals) = &mtx.transaction_body.proposal_procedures {
                 for (idx, proposal) in proposals.iter().enumerate() {
-                    let reward_account = Some(hex::encode(proposal.reward_account.to_vec()));
+                    let raw_ra = proposal.reward_account.to_vec();
+                    let ra_hrp = if raw_ra.first().copied() == Some(0xe1) { "stake_test" } else { "stake" };
+                    let reward_account = Some(hash_to_bech32(ra_hrp, &raw_ra));
                     let (action_type, details) =
                         gov_serializer::serialize_gov_action(&proposal.gov_action);
 

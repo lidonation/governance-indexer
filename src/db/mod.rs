@@ -1,5 +1,6 @@
 use crate::config::DatabaseConfig;
 use crate::parser::GovEvent;
+use crate::pipeline::types::ParsedBlock;
 use chrono::{DateTime, Utc};
 use lru::LruCache;
 use serde_json::json;
@@ -8,8 +9,6 @@ use sqlx::{Pool, Postgres, Transaction};
 use std::num::NonZeroUsize;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
-use tokio_retry::Retry;
-use tokio_retry::strategy::{ExponentialBackoff, jitter};
 use tracing::info;
 
 /// Global cache for delegation lookups (stake_address -> previous_drep)
@@ -69,43 +68,6 @@ pub async fn connect(config: &DatabaseConfig) -> Result<Pool<Postgres>, anyhow::
             }
         }
     }
-}
-
-pub async fn persist_events(
-    pool: &Pool<Postgres>,
-    events: Vec<GovEvent>,
-    timestamp: DateTime<Utc>,
-    epoch: i64,
-    slot: i64,
-) -> Result<(), anyhow::Error> {
-    if events.is_empty() {
-        return Ok(());
-    }
-
-    let retry_strategy = ExponentialBackoff::from_millis(100)
-        .map(jitter) // add jitter to delays
-        .take(5); // limit to 5 retries
-
-    Retry::spawn(retry_strategy, || {
-        let pool = pool.clone();
-        let events = events.clone();
-        let timestamp = timestamp;
-        let epoch = epoch;
-        let slot = slot;
-
-        async move {
-            let mut tx = pool.begin().await?;
-
-            for event in &events {
-                insert_governance_event(&mut tx, event, timestamp, epoch, slot).await?;
-            }
-
-            tx.commit().await?;
-            Ok::<(), anyhow::Error>(())
-        }
-    })
-    .await
-    .map_err(|e| anyhow::anyhow!("Failed to persist events after retries: {}", e))
 }
 
 /// Unified function to insert all governance events into drep_timeline_event table
@@ -333,7 +295,7 @@ async fn insert_governance_event(
                 "gov_action_proposal_id": proposal_tx_hash,
                 "time_voted": timestamp.to_rfc3339(),
                 "voting_epoch": epoch,
-                "vote_rationale": "",
+                "vote_rationale": anchor_url.clone().unwrap_or_default(),
                 "url": anchor_url.clone().unwrap_or_default()
             });
 
@@ -440,4 +402,57 @@ pub async fn get_stats(pool: &Pool<Postgres>) -> Result<DbStats, anyhow::Error> 
         checkpoint_count,
         last_event_time: last_event_time.map(|t| t.0),
     })
+}
+
+/// Persist all governance events from a parsed block in a single transaction.
+/// Idempotent — ON CONFLICT DO NOTHING on (tx_hash, tx_index).
+pub async fn persist_parsed_block(
+    pool: &Pool<Postgres>,
+    block: &ParsedBlock,
+) -> anyhow::Result<()> {
+    if block.events.is_empty() {
+        return Ok(());
+    }
+
+    let epoch = block.epoch as i64;
+    let slot = block.slot as i64;
+    let timestamp = block.timestamp;
+
+    let mut tx = pool.begin().await?;
+
+    for event in &block.events {
+        insert_governance_event(&mut tx, event, timestamp, epoch, slot).await?;
+    }
+
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Delete all events with slot > `after_slot`. Returns the number of rows deleted.
+pub async fn delete_after_slot(pool: &Pool<Postgres>, after_slot: u64) -> anyhow::Result<u64> {
+    let result = sqlx::query("DELETE FROM drep_timeline_event WHERE slot > $1")
+        .bind(after_slot as i64)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected())
+}
+
+/// Update the last_slot for a checkpoint without changing the hash.
+/// Used during rollbacks where we want to record the rollback point.
+pub async fn update_checkpoint_slot(
+    pool: &Pool<Postgres>,
+    worker_id: &str,
+    slot: u64,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        r#"
+        UPDATE sync_checkpoint SET last_slot = $1, updated_at = now()
+        WHERE worker_id = $2
+        "#,
+    )
+    .bind(slot as i64)
+    .bind(worker_id)
+    .execute(pool)
+    .await?;
+    Ok(())
 }
