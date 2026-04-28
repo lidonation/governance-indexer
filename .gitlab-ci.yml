@@ -84,6 +84,7 @@ trigger-deploy-preview-dev:
   variables:
     INDEXER_TAG: $CI_COMMIT_REF_SLUG
     INDEXER_SHA: $CI_COMMIT_SHORT_SHA
+    DEPLOY_WEBSITE: "false"
   rules:
     - if: '$CI_COMMIT_BRANCH && $CI_COMMIT_BRANCH != "main"'
 
@@ -98,6 +99,7 @@ trigger-deploy-preview-main:
   variables:
     INDEXER_TAG: latest
     INDEXER_SHA: $CI_COMMIT_SHORT_SHA
+    DEPLOY_WEBSITE: "false"
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
 
@@ -112,5 +114,6 @@ trigger-deploy-prod:
   variables:
     INDEXER_TAG: latest
     INDEXER_SHA: $CI_COMMIT_SHORT_SHA
+    DEPLOY_WEBSITE: "false"
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
