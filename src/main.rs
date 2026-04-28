@@ -59,23 +59,11 @@ enum Commands {
     /// Continue/Resume the paused indexer process (SIGCONT)
     #[command(name = "continue")]
     Continue,
-    /// Fix known data discrepancies (constant-DRep drep_ids, previous_drep, orphans)
+    /// Fix known data discrepancies (constant-DRep drep_ids, previous_drep)
     Reconcile {
-        /// Only run SQL fixes (skip Blockfrost orphan scan)
-        #[arg(long)]
-        sql_only: bool,
-        /// Also scan for and delete orphaned rollback events via Blockfrost
-        #[arg(long)]
-        scan_orphans: bool,
         /// Print what would be changed without applying any writes
         #[arg(long)]
         dry_run: bool,
-        /// Only check events at or after this slot number
-        #[arg(long)]
-        since_slot: Option<u64>,
-        /// Blockfrost project ID (or set BLOCKFROST_PROJECT_ID env var)
-        #[arg(long, env = "BLOCKFROST_PROJECT_ID")]
-        blockfrost_key: Option<String>,
     },
     /// Alias for start
     Build,
@@ -219,26 +207,11 @@ async fn main() -> Result<(), anyhow::Error> {
             let pool = db::connect(&config.database).await?;
             run_monitor(config, pool).await?;
         }
-        Some(Commands::Reconcile {
-            sql_only,
-            scan_orphans,
-            dry_run,
-            since_slot,
-            blockfrost_key,
-        }) => {
+        Some(Commands::Reconcile { dry_run }) => {
             let pool = db::connect(&config.database).await?;
             db::ensure_schema(&pool).await?;
-            reconciler::run_reconciler(
-                pool,
-                reconciler::ReconcileConfig {
-                    sql_only: *sql_only,
-                    scan_orphans: *scan_orphans,
-                    dry_run: *dry_run,
-                    since_slot: *since_slot,
-                    blockfrost_key: blockfrost_key.clone(),
-                },
-            )
-            .await?;
+            reconciler::run_reconciler(pool, reconciler::ReconcileConfig { dry_run: *dry_run })
+                .await?;
         }
         Some(Commands::Start) | Some(Commands::Build) | None => {
             let pool = db::connect(&config.database).await?;
