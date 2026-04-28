@@ -18,6 +18,57 @@ fn get_delegation_cache() -> &'static Mutex<LruCache<String, String>> {
     DELEGATION_CACHE.get_or_init(|| Mutex::new(LruCache::new(NonZeroUsize::new(100000).unwrap())))
 }
 
+/// Create all required tables and indexes if they don't already exist.
+/// Safe to call on every startup — all statements use IF NOT EXISTS.
+pub async fn ensure_schema(pool: &Pool<Postgres>) -> anyhow::Result<()> {
+    // Run each DDL statement separately — sqlx execute() is single-statement only.
+    let stmts = [
+        // Events table — includes stake_address/previous_drep from the start
+        r#"CREATE TABLE IF NOT EXISTS drep_timeline_event (
+            id             BIGSERIAL    PRIMARY KEY,
+            event_type     TEXT         NOT NULL,
+            timestamp      TIMESTAMPTZ  NOT NULL,
+            epoch          INTEGER      NOT NULL,
+            slot           BIGINT       NOT NULL,
+            tx_hash        TEXT         NOT NULL,
+            tx_index       INTEGER      NOT NULL,
+            block_hash     TEXT,
+            drep_id        TEXT,
+            metadata       JSONB        NOT NULL,
+            stake_address  TEXT,
+            previous_drep  TEXT,
+            created_at     TIMESTAMPTZ  NOT NULL DEFAULT now()
+        )"#,
+        // Checkpoint table
+        r#"CREATE TABLE IF NOT EXISTS sync_checkpoint (
+            worker_id   TEXT         PRIMARY KEY,
+            last_slot   BIGINT       NOT NULL,
+            last_hash   TEXT         NOT NULL,
+            updated_at  TIMESTAMPTZ  NOT NULL DEFAULT now()
+        )"#,
+        // Idempotency constraint
+        "CREATE UNIQUE INDEX IF NOT EXISTS uniq_drep_timeline_tx_event ON drep_timeline_event (tx_hash, tx_index)",
+        // Query indexes
+        "CREATE INDEX IF NOT EXISTS idx_drep_timeline_type      ON drep_timeline_event (event_type)",
+        "CREATE INDEX IF NOT EXISTS idx_drep_timeline_timestamp  ON drep_timeline_event (timestamp DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_drep_timeline_epoch      ON drep_timeline_event (epoch)",
+        "CREATE INDEX IF NOT EXISTS idx_drep_timeline_drep_id    ON drep_timeline_event (drep_id) WHERE drep_id IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS idx_drep_timeline_drep_time  ON drep_timeline_event (drep_id, timestamp DESC) WHERE drep_id IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS idx_drep_timeline_metadata   ON drep_timeline_event USING GIN (metadata)",
+        "CREATE INDEX IF NOT EXISTS idx_drep_timeline_stake      ON drep_timeline_event (stake_address, timestamp DESC) WHERE event_type = 'delegation'",
+        // ADD COLUMN IF NOT EXISTS for tables created by old schema without these columns
+        "ALTER TABLE drep_timeline_event ADD COLUMN IF NOT EXISTS stake_address TEXT",
+        "ALTER TABLE drep_timeline_event ADD COLUMN IF NOT EXISTS previous_drep TEXT",
+    ];
+
+    for stmt in &stmts {
+        sqlx::query(stmt).execute(pool).await?;
+    }
+
+    info!("schema verified");
+    Ok(())
+}
+
 pub async fn connect(config: &DatabaseConfig) -> Result<Pool<Postgres>, anyhow::Error> {
     info!("{}", "Database: Initializing connection pool...");
 

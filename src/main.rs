@@ -168,6 +168,7 @@ async fn main() -> Result<(), anyhow::Error> {
                 }
             }
             let pool = db::connect(&config.database).await?;
+            db::ensure_schema(&pool).await?;
             db::wipe_data(&pool).await?;
             println!("Database wiped successfully.");
         }
@@ -185,12 +186,14 @@ async fn main() -> Result<(), anyhow::Error> {
                 }
             }
             let pool = db::connect(&config.database).await?;
+            db::ensure_schema(&pool).await?;
             db::wipe_data(&pool).await?;
             println!("Database wiped. Starting fresh sync...");
             run_sync(config, pool, false).await?;
         }
         Some(Commands::Status) => {
             let pool = db::connect(&config.database).await?;
+            db::ensure_schema(&pool).await?;
             let stats = db::get_stats(&pool).await?;
             println!("Indexer Status:");
             println!("   Events:      {}", stats.event_count);
@@ -224,6 +227,7 @@ async fn main() -> Result<(), anyhow::Error> {
             blockfrost_key,
         }) => {
             let pool = db::connect(&config.database).await?;
+            db::ensure_schema(&pool).await?;
             reconciler::run_reconciler(
                 pool,
                 reconciler::ReconcileConfig {
@@ -278,6 +282,8 @@ async fn run_sync(config: Config, pool: PgPool, history_only: bool) -> anyhow::R
     config.validate()?;
     config.log_summary();
 
+    db::ensure_schema(&pool).await?;
+
     let slot_hashes = load_slot_hashes(&config.processing.slot_hashes_file)?;
     info!("Loaded {} epoch boundary points from CSV", slot_hashes.len());
 
@@ -316,6 +322,8 @@ async fn run_monitor(config: Config, pool: PgPool) -> anyhow::Result<()> {
         std::fs::write(PID_FILE, pid.to_string())?;
         PidCleanup
     };
+
+    db::ensure_schema(&pool).await?;
 
     let slot_hashes = load_slot_hashes(&config.processing.slot_hashes_file)?;
 
