@@ -1,10 +1,9 @@
 use async_trait::async_trait;
-use sqlx::PgPool;
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
-use crate::db;
 use crate::pipeline::types::ChainEvent;
+use crate::sinks::SinkSet;
 use gasket::framework::{Stage, WorkSchedule, Worker, WorkerError};
 use gasket::metrics::Counter;
 
@@ -13,7 +12,7 @@ use gasket::metrics::Counter;
 // ---------------------------------------------------------------------------
 
 pub struct EventSinkStage {
-    pub pool: PgPool,
+    pub sinks: SinkSet,
     pub input: mpsc::Receiver<ChainEvent>,
     pub blocks_committed: Counter,
     pub events_persisted: Counter,
@@ -67,30 +66,39 @@ impl Worker<EventSinkStage> for EventSinkWorker {
         match unit {
             ChainEvent::Block(parsed) => {
                 let event_count = parsed.events.len();
+                let mut had_error = false;
 
-                match db::persist_parsed_block(&stage.pool, parsed).await {
-                    Ok(_) => {
-                        stage.blocks_committed.inc(1);
-                        stage.events_persisted.inc(event_count as u64);
-                    }
-                    Err(e) => {
-                        error!("persist_parsed_block failed at slot {}: {}", parsed.slot, e);
-                        return Err(WorkerError::Retry);
+                for sink in &stage.sinks {
+                    if let Err(e) = sink.handle_block(parsed).await {
+                        error!("sink failed at slot {}: {}", parsed.slot, e);
+                        had_error = true;
                     }
                 }
+
+                if had_error {
+                    return Err(WorkerError::Retry);
+                }
+
+                stage.blocks_committed.inc(1);
+                stage.events_persisted.inc(event_count as u64);
             }
             ChainEvent::Rollback { to_slot } => {
                 warn!("chain rollback to slot {}", to_slot);
-                match db::delete_after_slot(&stage.pool, *to_slot).await {
-                    Ok(deleted) => {
-                        info!("rollback: deleted {} events after slot {}", deleted, to_slot);
-                        stage.rollbacks_handled.inc(1);
-                    }
-                    Err(e) => {
-                        error!("rollback delete failed: {}", e);
-                        return Err(WorkerError::Retry);
+                let mut had_error = false;
+
+                for sink in &stage.sinks {
+                    if let Err(e) = sink.handle_rollback(*to_slot).await {
+                        error!("sink rollback failed: {}", e);
+                        had_error = true;
                     }
                 }
+
+                if had_error {
+                    return Err(WorkerError::Retry);
+                }
+
+                info!("rollback to slot {} handled by {} sink(s)", to_slot, stage.sinks.len());
+                stage.rollbacks_handled.inc(1);
             }
         }
 

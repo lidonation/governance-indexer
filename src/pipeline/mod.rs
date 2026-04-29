@@ -14,7 +14,6 @@ use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 use crate::config::Config;
-use crate::db;
 use crate::pipeline::stages::{
     block_fetcher::HistoricalFetcherStage,
     chain_follower::ChainFollowerStage,
@@ -22,9 +21,41 @@ use crate::pipeline::stages::{
     governance_parser::GovernanceParserStage,
 };
 use crate::pipeline::types::EpochRange;
+use crate::sinks::{SinkSet, postgres::PostgresSink, webhook::WebhookSink};
 use gasket::metrics::Counter;
 use gasket::runtime::{Policy, TetherState, spawn_stage};
 use gasket::retries;
+
+// ---------------------------------------------------------------------------
+// Sink construction
+// ---------------------------------------------------------------------------
+
+pub fn build_sinks(config: &Config, pool: PgPool) -> SinkSet {
+    let mut sinks: SinkSet = Vec::new();
+
+    if config.sinks.postgres_enabled {
+        info!("sink: postgres enabled");
+        sinks.push(Arc::new(PostgresSink::new(pool)));
+    }
+
+    if config.sinks.webhook_enabled {
+        if let Some(url) = &config.sinks.webhook_url {
+            info!("sink: webhook enabled → {}", url);
+            sinks.push(Arc::new(WebhookSink::new(
+                url.clone(),
+                config.sinks.webhook_secret.clone(),
+            )));
+        } else {
+            warn!("sink: SINK_WEBHOOK_ENABLED=true but SINK_WEBHOOK_URL is not set — webhook disabled");
+        }
+    }
+
+    if sinks.is_empty() {
+        warn!("no sinks configured — events will be parsed but not persisted");
+    }
+
+    sinks
+}
 
 // ---------------------------------------------------------------------------
 // Retry policies
@@ -150,6 +181,7 @@ pub fn build_epoch_ranges(slot_hashes: &[(u64, String)]) -> anyhow::Result<Vec<E
 pub fn run_historical_pipeline(
     config: &Config,
     pool: PgPool,
+    sinks: SinkSet,
     ranges: Vec<EpochRange>,
 ) -> anyhow::Result<()> {
     // Skip ranges already completed in a previous run.
@@ -208,7 +240,7 @@ pub fn run_historical_pipeline(
     };
 
     let sink = EventSinkStage {
-        pool,
+        sinks,
         input: event_rx,
         blocks_committed: Counter::default(),
         events_persisted: Counter::default(),
@@ -268,6 +300,7 @@ pub fn run_historical_pipeline(
 pub fn run_continuous_pipeline(
     config: &Config,
     pool: PgPool,
+    sinks: SinkSet,
     start_point: Point,
 ) -> anyhow::Result<()> {
     let (event_tx, event_rx) = mpsc::channel(64);
@@ -285,7 +318,7 @@ pub fn run_continuous_pipeline(
     };
 
     let sink = EventSinkStage {
-        pool,
+        sinks,
         input: event_rx,
         blocks_committed: Counter::default(),
         events_persisted: Counter::default(),

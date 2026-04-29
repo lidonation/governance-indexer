@@ -26,3 +26,5 @@ sysinfo = "0.30"
 gasket = { version = "0.9", features = ["derive"] }
 async-trait = "0.1"
 signal-hook = "0.3"
+hmac = "0.12"
+sha2 = "0.10"

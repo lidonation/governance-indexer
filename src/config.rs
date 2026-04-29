@@ -41,10 +41,30 @@ pub struct ProcessingConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct SinksConfig {
+    pub postgres_enabled: bool,
+    pub webhook_enabled: bool,
+    pub webhook_url: Option<String>,
+    pub webhook_secret: Option<String>,
+}
+
+impl Default for SinksConfig {
+    fn default() -> Self {
+        Self {
+            postgres_enabled: true,
+            webhook_enabled: false,
+            webhook_url: None,
+            webhook_secret: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     pub database: DatabaseConfig,
     pub network: NetworkConfig,
     pub processing: ProcessingConfig,
+    pub sinks: SinksConfig,
 }
 
 impl Default for Config {
@@ -77,6 +97,7 @@ impl Default for Config {
                 continuous_sync_interval_secs: 20,
                 slot_hashes_file: "slot_hashes.csv".to_string(),
             },
+            sinks: SinksConfig::default(),
         }
     }
 }
@@ -275,6 +296,20 @@ impl Config {
             config.processing.slot_hashes_file = file;
         }
 
+        // Sink configuration
+        if let Some(v) = get_env("SINK_POSTGRES_ENABLED") {
+            config.sinks.postgres_enabled = v.to_lowercase() != "false" && v != "0";
+        }
+        if let Some(v) = get_env("SINK_WEBHOOK_ENABLED") {
+            config.sinks.webhook_enabled = v.to_lowercase() == "true" || v == "1";
+        }
+        if let Some(url) = get_env("SINK_WEBHOOK_URL") {
+            config.sinks.webhook_url = Some(url);
+        }
+        if let Some(secret) = get_env("SINK_WEBHOOK_SECRET") {
+            config.sinks.webhook_secret = Some(secret);
+        }
+
         Ok(config)
     }
 
@@ -325,6 +360,12 @@ impl Config {
         tracing::info!("  Relay: {}", self.network.relay_address);
         tracing::info!("  Workers: {}", self.processing.max_concurrent_workers);
         tracing::info!("  Batch Size: {}", self.processing.batch_size);
+        tracing::info!("  Sinks: postgres={}, webhook={}", self.sinks.postgres_enabled, self.sinks.webhook_enabled);
+        if self.sinks.webhook_enabled {
+            if let Some(url) = &self.sinks.webhook_url {
+                tracing::info!("  Webhook URL: {}", url);
+            }
+        }
     }
 }
 

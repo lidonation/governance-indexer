@@ -10,7 +10,7 @@ mod config;
 mod db;
 mod parser;
 mod pipeline;
-mod reconciler;
+mod sinks;
 mod utils;
 
 use clap::{Parser, Subcommand};
@@ -59,12 +59,6 @@ enum Commands {
     /// Continue/Resume the paused indexer process (SIGCONT)
     #[command(name = "continue")]
     Continue,
-    /// Fix known data discrepancies (constant-DRep drep_ids, previous_drep)
-    Reconcile {
-        /// Print what would be changed without applying any writes
-        #[arg(long)]
-        dry_run: bool,
-    },
     /// Alias for start
     Build,
 }
@@ -207,12 +201,6 @@ async fn main() -> Result<(), anyhow::Error> {
             let pool = db::connect(&config.database).await?;
             run_monitor(config, pool).await?;
         }
-        Some(Commands::Reconcile { dry_run }) => {
-            let pool = db::connect(&config.database).await?;
-            db::ensure_schema(&pool).await?;
-            reconciler::run_reconciler(pool, reconciler::ReconcileConfig { dry_run: *dry_run })
-                .await?;
-        }
         Some(Commands::Start) | Some(Commands::Build) | None => {
             let pool = db::connect(&config.database).await?;
             run_sync(config, pool, false).await?;
@@ -274,8 +262,9 @@ async fn run_sync(config: Config, pool: PgPool, history_only: bool) -> anyhow::R
 
     let pool_h = pool.clone();
     let config_h = config.clone();
+    let sinks_h = pipeline::build_sinks(&config, pool.clone());
     tokio::task::spawn_blocking(move || {
-        pipeline::run_historical_pipeline(&config_h, pool_h, ranges)
+        pipeline::run_historical_pipeline(&config_h, pool_h, sinks_h, ranges)
     })
     .await
     .context("historical pipeline thread panicked")?
@@ -312,8 +301,9 @@ async fn run_monitor(config: Config, pool: PgPool) -> anyhow::Result<()> {
 
     let pool_c = pool.clone();
     let config_c = config.clone();
+    let sinks_c = pipeline::build_sinks(&config, pool.clone());
     tokio::task::spawn_blocking(move || {
-        pipeline::run_continuous_pipeline(&config_c, pool_c, start_point)
+        pipeline::run_continuous_pipeline(&config_c, pool_c, sinks_c, start_point)
     })
     .await
     .context("continuous pipeline thread panicked")?

@@ -21,7 +21,14 @@ fn get_delegation_cache() -> &'static Mutex<LruCache<String, String>> {
 /// Create all required tables and indexes if they don't already exist.
 /// Safe to call on every startup — all statements use IF NOT EXISTS.
 pub async fn ensure_schema(pool: &Pool<Postgres>) -> anyhow::Result<()> {
-    // Run each DDL statement separately — sqlx execute() is single-statement only.
+    // Acquire a dedicated connection and disable statement_timeout for DDL.
+    // CREATE INDEX on a large existing table can take minutes — the default 5s
+    // session timeout would kill it. We restore the timeout before releasing.
+    let mut conn = pool.acquire().await?;
+    sqlx::query("SET statement_timeout = 0")
+        .execute(&mut *conn)
+        .await?;
+
     let stmts = [
         // Events table — includes stake_address/previous_drep from the start
         r#"CREATE TABLE IF NOT EXISTS drep_timeline_event (
@@ -62,8 +69,13 @@ pub async fn ensure_schema(pool: &Pool<Postgres>) -> anyhow::Result<()> {
     ];
 
     for stmt in &stmts {
-        sqlx::query(stmt).execute(pool).await?;
+        sqlx::query(stmt).execute(&mut *conn).await?;
     }
+
+    // Restore timeout before the connection goes back to the pool.
+    sqlx::query("SET statement_timeout = '5s'")
+        .execute(&mut *conn)
+        .await?;
 
     info!("schema verified");
     Ok(())
@@ -221,11 +233,11 @@ async fn insert_governance_event(
             } else {
                 let db_drep = sqlx::query_scalar::<_, Option<String>>(
                     r#"
-                    SELECT previous_drep
+                    SELECT drep_id
                     FROM drep_timeline_event
                     WHERE stake_address = $1
                       AND event_type = 'delegation'
-                    ORDER BY timestamp DESC
+                    ORDER BY slot DESC
                     LIMIT 1
                     "#,
                 )
@@ -233,7 +245,7 @@ async fn insert_governance_event(
                 .fetch_optional(tx.as_mut())
                 .await?
                 .flatten()
-                .unwrap_or("drep_always_abstain".to_string());
+                .unwrap_or_default();
 
                 // Update cache
                 {
