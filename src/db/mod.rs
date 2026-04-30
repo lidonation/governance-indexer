@@ -62,7 +62,7 @@ pub async fn ensure_schema(pool: &Pool<Postgres>) -> anyhow::Result<()> {
         "CREATE INDEX IF NOT EXISTS idx_drep_timeline_drep_id    ON drep_timeline_event (drep_id) WHERE drep_id IS NOT NULL",
         "CREATE INDEX IF NOT EXISTS idx_drep_timeline_drep_time  ON drep_timeline_event (drep_id, timestamp DESC) WHERE drep_id IS NOT NULL",
         "CREATE INDEX IF NOT EXISTS idx_drep_timeline_metadata   ON drep_timeline_event USING GIN (metadata)",
-        "CREATE INDEX IF NOT EXISTS idx_drep_timeline_stake      ON drep_timeline_event (stake_address, timestamp DESC) WHERE event_type = 'delegation'",
+        "CREATE INDEX IF NOT EXISTS idx_drep_timeline_stake      ON drep_timeline_event (stake_address, slot DESC) WHERE event_type = 'delegation'",
         // ADD COLUMN IF NOT EXISTS for tables created by old schema without these columns
         "ALTER TABLE drep_timeline_event ADD COLUMN IF NOT EXISTS stake_address TEXT",
         "ALTER TABLE drep_timeline_event ADD COLUMN IF NOT EXISTS previous_drep TEXT",
@@ -71,11 +71,6 @@ pub async fn ensure_schema(pool: &Pool<Postgres>) -> anyhow::Result<()> {
     for stmt in &stmts {
         sqlx::query(stmt).execute(&mut *conn).await?;
     }
-
-    // Restore timeout before the connection goes back to the pool.
-    sqlx::query("SET statement_timeout = '5s'")
-        .execute(&mut *conn)
-        .await?;
 
     info!("schema verified");
     Ok(())
@@ -95,7 +90,7 @@ pub async fn connect(config: &DatabaseConfig) -> Result<Pool<Postgres>, anyhow::
             .max_lifetime(Duration::from_secs(config.max_lifetime_secs))
             .after_connect(|conn, _meta| {
                 Box::pin(async move {
-                    sqlx::query("SET statement_timeout = '5s'")
+                    sqlx::query("SET statement_timeout = 0")
                         .execute(conn)
                         .await?;
                     Ok(())
