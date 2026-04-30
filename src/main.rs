@@ -218,9 +218,16 @@ fn load_slot_hashes(path: &str) -> anyhow::Result<Vec<(u64, String)>> {
 
     for line in reader.lines() {
         let line = line?;
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
         let parts: Vec<&str> = line.split(',').collect();
         if parts.len() >= 2 {
-            let slot: u64 = parts[0].trim().parse()?;
+            let slot = match parts[0].trim().parse::<u64>() {
+                Ok(s) => s,
+                Err(_) => continue, // skip header or malformed lines
+            };
             let hash = parts[1].trim().to_string();
             if !hash.is_empty() {
                 slot_hashes.push((slot, hash));
