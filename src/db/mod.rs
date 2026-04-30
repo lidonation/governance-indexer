@@ -61,7 +61,6 @@ pub async fn ensure_schema(pool: &Pool<Postgres>) -> anyhow::Result<()> {
         "CREATE INDEX IF NOT EXISTS idx_drep_timeline_epoch      ON drep_timeline_event (epoch)",
         "CREATE INDEX IF NOT EXISTS idx_drep_timeline_drep_id    ON drep_timeline_event (drep_id) WHERE drep_id IS NOT NULL",
         "CREATE INDEX IF NOT EXISTS idx_drep_timeline_drep_time  ON drep_timeline_event (drep_id, timestamp DESC) WHERE drep_id IS NOT NULL",
-        "CREATE INDEX IF NOT EXISTS idx_drep_timeline_metadata   ON drep_timeline_event USING GIN (metadata)",
         "CREATE INDEX IF NOT EXISTS idx_drep_timeline_stake      ON drep_timeline_event (stake_address, slot DESC) WHERE event_type = 'delegation'",
         // ADD COLUMN IF NOT EXISTS for tables created by old schema without these columns
         "ALTER TABLE drep_timeline_event ADD COLUMN IF NOT EXISTS stake_address TEXT",
