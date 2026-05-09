@@ -122,9 +122,23 @@ impl Worker<ChainFollowerStage> for ChainFollowerWorker {
     async fn bootstrap(stage: &ChainFollowerStage) -> Result<Self, WorkerError> {
         let (mut cs_peer, bf_peer) = Self::connect(stage).await.or_restart()?;
 
+        // On reconnect, resume from the latest DB checkpoint rather than the original
+        // start_point. Without this, every connection drop replays from the beginning
+        // of continuous sync instead of the last persisted slot.
+        let resume_point = match db::get_checkpoint(&stage.pool, &stage.worker_id).await {
+            Ok(Some((slot, hash_hex))) => match hex::decode(&hash_hex) {
+                Ok(hash) => {
+                    info!("chain-follower: reconnecting from checkpoint at slot {}", slot);
+                    Point::Specific(slot, hash)
+                }
+                Err(_) => stage.start_point.clone(),
+            },
+            _ => stage.start_point.clone(),
+        };
+
         let intersection = cs_peer
             .chainsync()
-            .find_intersect(vec![stage.start_point.clone()])
+            .find_intersect(vec![resume_point])
             .await
             .or_restart()?;
 

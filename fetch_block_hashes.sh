@@ -7,12 +7,10 @@ set -e
 START_EPOCH=507              # Conway hard fork epoch
 OUTPUT_FILE="slot_hashes.csv"
 BLOCKFROST_API="https://cardano-mainnet.blockfrost.io/api/v0"
-BLOCKFROST_PROJECT_ID="mainnetV29VzrJdraZVrvlFN3HRM1vQi5lksq7H"
 
-# You MUST export your key first:
-# export BLOCKFROST_PROJECT_ID=xxxx
+# Set via environment: export BLOCKFROST_PROJECT_ID=mainnetXXXXX
 if [ -z "$BLOCKFROST_PROJECT_ID" ]; then
-  echo "❌ BLOCKFROST_PROJECT_ID not set"
+  echo "❌ BLOCKFROST_PROJECT_ID not set. Run: export BLOCKFROST_PROJECT_ID=mainnetXXXX"
   exit 1
 fi
 
