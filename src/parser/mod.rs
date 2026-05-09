@@ -144,17 +144,45 @@ pub fn extract_governance(block_bytes: &[u8]) -> Vec<GovEvent> {
                     }
                     // VoteDeleg(StakeCredential, DRep)
                     Certificate::VoteDeleg(ref stake, ref drep) => {
-                        let drep_has_script = match drep {
-                            DRep::Script(_) => true,
-                            _ => false,
-                        };
-
                         events.push(GovEvent::Delegation {
                             tx_hash: tx_hash.clone(),
                             tx_index,
                             stake_credential: format_stake(stake),
                             drep_id: format_drep(drep),
-                            drep_has_script,
+                            drep_has_script: matches!(drep, DRep::Script(_)),
+                        });
+                        tx_index += 1;
+                    }
+                    // VoteRegDeleg(StakeCredential, DRep, Coin) — stake registration + DRep delegation
+                    Certificate::VoteRegDeleg(ref stake, ref drep, _coin) => {
+                        events.push(GovEvent::Delegation {
+                            tx_hash: tx_hash.clone(),
+                            tx_index,
+                            stake_credential: format_stake(stake),
+                            drep_id: format_drep(drep),
+                            drep_has_script: matches!(drep, DRep::Script(_)),
+                        });
+                        tx_index += 1;
+                    }
+                    // StakeVoteDeleg(StakeCredential, PoolKeyhash, DRep) — pool + DRep delegation
+                    Certificate::StakeVoteDeleg(ref stake, _pool, ref drep) => {
+                        events.push(GovEvent::Delegation {
+                            tx_hash: tx_hash.clone(),
+                            tx_index,
+                            stake_credential: format_stake(stake),
+                            drep_id: format_drep(drep),
+                            drep_has_script: matches!(drep, DRep::Script(_)),
+                        });
+                        tx_index += 1;
+                    }
+                    // StakeVoteRegDeleg(StakeCredential, PoolKeyhash, DRep, Coin) — register + pool + DRep
+                    Certificate::StakeVoteRegDeleg(ref stake, _pool, ref drep, _coin) => {
+                        events.push(GovEvent::Delegation {
+                            tx_hash: tx_hash.clone(),
+                            tx_index,
+                            stake_credential: format_stake(stake),
+                            drep_id: format_drep(drep),
+                            drep_has_script: matches!(drep, DRep::Script(_)),
                         });
                         tx_index += 1;
                     }

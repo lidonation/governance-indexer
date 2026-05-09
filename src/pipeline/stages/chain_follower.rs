@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use hex;
-use pallas::ledger::traverse::MultiEraHeader;
+use pallas::ledger::traverse::{MultiEraBlock, MultiEraHeader};
 use pallas::network::facades::PeerClient;
 use pallas::network::miniprotocols::{Point, chainsync};
 use tokio::sync::mpsc;
@@ -16,12 +16,17 @@ use gasket::framework::{AsWorkError, Stage, WorkSchedule, Worker, WorkerError};
 use gasket::metrics::Counter;
 use sqlx::PgPool;
 
+// How many block headers to collect from chainsync before issuing one request_range.
+// Higher = more efficient during catch-up. Lower = shorter feedback loops at tip.
+const BATCH_SIZE: usize = 128;
+
 // ---------------------------------------------------------------------------
 // Unit type: what schedule() hands to execute()
 // ---------------------------------------------------------------------------
 
 pub enum ChainAction {
-    Forward { slot: u64, hash: Vec<u8> },
+    // (slot, hash) pairs collected from chainsync headers
+    ForwardBatch(Vec<(u64, Vec<u8>)>),
     Rollback { to_slot: u64 },
 }
 
@@ -64,6 +69,10 @@ impl Stage for ChainFollowerStage {
 pub struct ChainFollowerWorker {
     chainsync_peer: Option<PeerClient>,
     blockfetch_peer: Option<PeerClient>,
+    at_tip: bool,
+    // A rollback received mid-batch is stored here and emitted on the next schedule() call,
+    // after the in-flight batch has been flushed.
+    pending_rollback: Option<u64>,
 }
 
 impl ChainFollowerWorker {
@@ -111,10 +120,8 @@ impl ChainFollowerWorker {
 #[async_trait(?Send)]
 impl Worker<ChainFollowerStage> for ChainFollowerWorker {
     async fn bootstrap(stage: &ChainFollowerStage) -> Result<Self, WorkerError> {
-        let (mut cs_peer, bf_peer) =
-            Self::connect(stage).await.or_restart()?;
+        let (mut cs_peer, bf_peer) = Self::connect(stage).await.or_restart()?;
 
-        // Find intersection with our last known point
         let intersection = cs_peer
             .chainsync()
             .find_intersect(vec![stage.start_point.clone()])
@@ -126,61 +133,89 @@ impl Worker<ChainFollowerStage> for ChainFollowerWorker {
         Ok(ChainFollowerWorker {
             chainsync_peer: Some(cs_peer),
             blockfetch_peer: Some(bf_peer),
+            at_tip: false,
+            pending_rollback: None,
         })
     }
 
-    /// Calls request_next() and returns what schedule() found.
-    /// Returns Idle when at tip (so we sleep before checking again).
+    /// Collect up to BATCH_SIZE block headers from chainsync, then return the batch.
+    /// This lets execute() use request_range for the whole batch instead of fetch_single
+    /// per block, which is critical for catch-up when the chain follower is many blocks behind.
     async fn schedule(
         &mut self,
         stage: &mut ChainFollowerStage,
     ) -> Result<WorkSchedule<ChainAction>, WorkerError> {
-        let next = match tokio::time::timeout(
-            Duration::from_secs(60),
-            self.chainsync_peer.as_mut().unwrap().chainsync().request_next(),
-        )
-        .await
-        {
-            Ok(Ok(n)) => n,
-            Ok(Err(e)) => {
-                warn!("chain-follower: request_next error: {}", e);
-                return Err(WorkerError::Restart);
-            }
-            Err(_) => {
-                warn!("chain-follower: request_next timed out");
-                return Err(WorkerError::Restart);
-            }
-        };
+        // A rollback received while a batch was in progress — emit it now.
+        if let Some(to_slot) = self.pending_rollback.take() {
+            return Ok(WorkSchedule::Unit(ChainAction::Rollback { to_slot }));
+        }
 
-        match next {
-            chainsync::NextResponse::RollForward(header_content, _tip) => {
-                let cbor_bytes = &header_content.cbor;
-                let subtag = header_content.byron_prefix.map(|(tag, _)| tag);
+        let mut batch: Vec<(u64, Vec<u8>)> = Vec::with_capacity(BATCH_SIZE);
 
-                match MultiEraHeader::decode(header_content.variant, subtag, cbor_bytes) {
-                    Ok(header) => {
-                        let slot = header.slot();
-                        let hash = header.hash().to_vec();
-                        Ok(WorkSchedule::Unit(ChainAction::Forward { slot, hash }))
-                    }
-                    Err(e) => {
-                        warn!("chain-follower: header decode failed: {}", e);
-                        // Skip this block — it might be a Byron-era edge case.
-                        Ok(WorkSchedule::Idle)
+        loop {
+            let next = match tokio::time::timeout(
+                Duration::from_secs(60),
+                self.chainsync_peer.as_mut().unwrap().chainsync().request_next(),
+            )
+            .await
+            {
+                Ok(Ok(n)) => n,
+                Ok(Err(e)) => {
+                    warn!("chain-follower: request_next error: {}", e);
+                    return Err(WorkerError::Restart);
+                }
+                Err(_) => {
+                    warn!("chain-follower: request_next timed out");
+                    return Err(WorkerError::Restart);
+                }
+            };
+
+            match next {
+                chainsync::NextResponse::RollForward(header_content, _tip) => {
+                    let cbor_bytes = &header_content.cbor;
+                    let subtag = header_content.byron_prefix.map(|(tag, _)| tag);
+
+                    match MultiEraHeader::decode(header_content.variant, subtag, cbor_bytes) {
+                        Ok(header) => {
+                            batch.push((header.slot(), header.hash().to_vec()));
+                            if batch.len() >= BATCH_SIZE {
+                                return Ok(WorkSchedule::Unit(ChainAction::ForwardBatch(batch)));
+                            }
+                        }
+                        Err(e) => {
+                            warn!("chain-follower: header decode failed: {}", e);
+                            // Skip — likely a Byron-era edge case. Continue collecting.
+                        }
                     }
                 }
-            }
-            chainsync::NextResponse::RollBackward(point, _tip) => {
-                let to_slot = match &point {
-                    Point::Specific(s, _) => *s,
-                    Point::Origin => 0,
-                };
-                Ok(WorkSchedule::Unit(ChainAction::Rollback { to_slot }))
-            }
-            chainsync::NextResponse::Await => {
-                // At tip — sleep before polling again.
-                tokio::time::sleep(Duration::from_secs(stage.interval_secs)).await;
-                Ok(WorkSchedule::Idle)
+
+                chainsync::NextResponse::RollBackward(point, _tip) => {
+                    let to_slot = match &point {
+                        Point::Specific(s, _) => *s,
+                        Point::Origin => 0,
+                    };
+                    if batch.is_empty() {
+                        return Ok(WorkSchedule::Unit(ChainAction::Rollback { to_slot }));
+                    } else {
+                        // Flush the batch first; store rollback for the next schedule() call.
+                        self.pending_rollback = Some(to_slot);
+                        return Ok(WorkSchedule::Unit(ChainAction::ForwardBatch(batch)));
+                    }
+                }
+
+                chainsync::NextResponse::Await => {
+                    if !self.at_tip {
+                        self.at_tip = true;
+                        info!("chain-follower: REACHED TIP — now following chain in real-time");
+                    }
+                    if batch.is_empty() {
+                        tokio::time::sleep(Duration::from_secs(stage.interval_secs)).await;
+                        return Ok(WorkSchedule::Idle);
+                    } else {
+                        // Flush the partial batch before sleeping.
+                        return Ok(WorkSchedule::Unit(ChainAction::ForwardBatch(batch)));
+                    }
+                }
             }
         }
     }
@@ -191,57 +226,88 @@ impl Worker<ChainFollowerStage> for ChainFollowerWorker {
         stage: &mut ChainFollowerStage,
     ) -> Result<(), WorkerError> {
         match unit {
-            ChainAction::Forward { slot, hash } => {
-                let point = Point::Specific(*slot, hash.clone());
-                let hash_hex = hex::encode(hash);
+            ChainAction::ForwardBatch(headers) => {
+                if headers.is_empty() {
+                    return Ok(());
+                }
 
-                match self
-                    .blockfetch_peer
-                    .as_mut()
-                    .unwrap()
-                    .blockfetch()
-                    .fetch_single(point.clone())
-                    .await
-                {
-                    Ok(body) => {
-                        let events = parser::extract_governance(&body);
-                        let epoch = slot_to_epoch(*slot);
-                        let timestamp = slot_to_timestamp(*slot);
+                let start = Point::Specific(headers[0].0, headers[0].1.clone());
+                let end = Point::Specific(
+                    headers.last().unwrap().0,
+                    headers.last().unwrap().1.clone(),
+                );
 
-                        let parsed = ParsedBlock {
-                            slot: *slot,
-                            epoch,
-                            timestamp,
-                            events,
-                        };
+                let client = self.blockfetch_peer.as_mut().unwrap().blockfetch();
 
-                        // Persist checkpoint atomically with events inside db call.
-                        if let Err(e) = db::persist_parsed_block(&stage.pool, &parsed).await {
-                            error!("chain-follower: persist failed at slot {}: {}", slot, e);
-                            return Err(WorkerError::Retry);
-                        }
-
-                        // Update checkpoint for continuous worker.
-                        if let Err(e) =
-                            db::update_checkpoint(&stage.pool, &stage.worker_id, *slot, &hash_hex)
-                                .await
-                        {
-                            warn!("chain-follower: checkpoint update failed: {}", e);
-                        }
-
-                        // Forward the ChainEvent downstream.
-                        stage
-                            .output
-                            .send(ChainEvent::Block(parsed))
-                            .await
-                            .map_err(|_| WorkerError::Send)?;
-
-                        stage.blocks_followed.inc(1);
-                    }
+                match client.request_range((start, end)).await {
+                    Ok(_) => {}
                     Err(e) => {
-                        warn!("chain-follower: fetch_single failed at slot {}: {} — reconnecting", slot, e);
+                        warn!("chain-follower: request_range failed: {:?} — reconnecting", e);
                         return Err(WorkerError::Restart);
                     }
+                }
+
+                loop {
+                    match tokio::time::timeout(
+                        Duration::from_secs(60),
+                        client.recv_while_streaming(),
+                    )
+                    .await
+                    {
+                        Ok(Ok(Some(body))) => {
+                            let block = match MultiEraBlock::decode(&body) {
+                                Ok(b) => b,
+                                Err(e) => {
+                                    warn!("chain-follower: block decode failed: {}", e);
+                                    continue;
+                                }
+                            };
+
+                            let slot = block.slot();
+                            let events = parser::extract_governance(&body);
+                            let epoch = slot_to_epoch(slot);
+                            let timestamp = slot_to_timestamp(slot);
+
+                            let parsed = ParsedBlock {
+                                slot,
+                                epoch,
+                                timestamp,
+                                events,
+                            };
+
+                            if let Err(e) = db::persist_parsed_block(&stage.pool, &parsed).await {
+                                error!("chain-follower: persist failed at slot {}: {}", slot, e);
+                                return Err(WorkerError::Retry);
+                            }
+
+                            stage
+                                .output
+                                .send(ChainEvent::Block(parsed))
+                                .await
+                                .map_err(|_| WorkerError::Send)?;
+
+                            stage.blocks_followed.inc(1);
+                        }
+                        Ok(Ok(None)) => break, // range fully received
+                        Ok(Err(e)) => {
+                            warn!("chain-follower: stream error: {:?} — reconnecting", e);
+                            return Err(WorkerError::Restart);
+                        }
+                        Err(_) => {
+                            warn!("chain-follower: stream timed out — reconnecting");
+                            return Err(WorkerError::Restart);
+                        }
+                    }
+                }
+
+                // Checkpoint at the end of the batch.
+                let (last_slot, last_hash) = headers.last().unwrap();
+                let hash_hex = hex::encode(last_hash);
+                if let Err(e) =
+                    db::update_checkpoint(&stage.pool, &stage.worker_id, *last_slot, &hash_hex)
+                        .await
+                {
+                    warn!("chain-follower: checkpoint update failed: {}", e);
                 }
             }
 
@@ -253,7 +319,6 @@ impl Worker<ChainFollowerStage> for ChainFollowerWorker {
                     return Err(WorkerError::Retry);
                 }
 
-                // Update checkpoint to rollback point.
                 if let Err(e) =
                     db::update_checkpoint_slot(&stage.pool, &stage.worker_id, *to_slot).await
                 {
