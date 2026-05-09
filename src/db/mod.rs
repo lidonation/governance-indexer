@@ -2,49 +2,14 @@ use crate::config::DatabaseConfig;
 use crate::parser::GovEvent;
 use crate::pipeline::types::ParsedBlock;
 use chrono::{DateTime, Utc};
-use lru::LruCache;
 use serde_json::json;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{Pool, Postgres, Transaction};
 use std::collections::HashMap;
-use std::num::NonZeroUsize;
-use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use tracing::info;
 
-/// Global cache for delegation lookups (stake_address -> previous_drep)
-static DELEGATION_CACHE: OnceLock<Mutex<LruCache<String, String>>> = OnceLock::new();
 
-fn get_delegation_cache() -> &'static Mutex<LruCache<String, String>> {
-    DELEGATION_CACHE.get_or_init(|| Mutex::new(LruCache::new(NonZeroUsize::new(100000).unwrap())))
-}
-
-/// Resolve the most recent drep_id for a stake address using a pool connection (not a transaction).
-/// Result is cached in the global LRU cache so parallel workers avoid redundant queries.
-async fn resolve_previous_drep(pool: &Pool<Postgres>, stake_address: &str) -> anyhow::Result<String> {
-    {
-        let mut cache = get_delegation_cache().lock().unwrap();
-        if let Some(drep) = cache.get(stake_address) {
-            return Ok(drep.clone());
-        }
-    }
-
-    let drep = sqlx::query_scalar::<_, Option<String>>(
-        "SELECT drep_id FROM drep_timeline_event WHERE stake_address = $1 AND event_type = 'delegation' ORDER BY slot DESC LIMIT 1",
-    )
-    .bind(stake_address)
-    .fetch_optional(pool)
-    .await?
-    .flatten()
-    .unwrap_or_default();
-
-    {
-        let mut cache = get_delegation_cache().lock().unwrap();
-        cache.put(stake_address.to_string(), drep.clone());
-    }
-
-    Ok(drep)
-}
 
 /// Create all required tables and indexes if they don't already exist.
 /// Safe to call on every startup — all statements use IF NOT EXISTS.
@@ -163,7 +128,6 @@ async fn insert_governance_event(
     timestamp: DateTime<Utc>,
     epoch: i64,
     slot: i64,
-    prev_drep_map: &mut HashMap<String, String>,
 ) -> Result<(), anyhow::Error> {
     match event {
         GovEvent::Registration {
@@ -246,18 +210,11 @@ async fn insert_governance_event(
             drep_id,
             drep_has_script,
         } => {
-            // previous_drep was resolved outside the transaction — no DB read inside here
-            let previous_drep = prev_drep_map
-                .get(stake_credential)
-                .cloned()
-                .unwrap_or_default();
-
             let metadata = json!({
                 "stake_address": stake_credential,
                 "target_drep": drep_id,
                 "current_drep": drep_id,
                 "drep_has_script": drep_has_script,
-                "previous_drep": previous_drep,
                 "tx_hash": tx_hash,
                 "timestamp": timestamp.to_rfc3339(),
                 "delegation_epoch": epoch,
@@ -282,17 +239,9 @@ async fn insert_governance_event(
             .bind(drep_id)
             .bind(metadata)
             .bind(stake_credential)
-            .bind(&previous_drep)
+            .bind(Option::<String>::None)
             .execute(tx.as_mut())
             .await?;
-
-            // Advance the map so a second delegation from the same address in this
-            // block uses this drep_id as its previous_drep, and update the LRU cache.
-            prev_drep_map.insert(stake_credential.clone(), drep_id.clone());
-            {
-                let mut cache = get_delegation_cache().lock().unwrap();
-                cache.put(stake_credential.clone(), drep_id.clone());
-            }
         }
 
         GovEvent::Proposal {
@@ -503,20 +452,6 @@ pub async fn persist_parsed_block(
     let slot = block.slot as i64;
     let timestamp = block.timestamp;
 
-    // Pre-resolve previous_drep for every delegation in this block BEFORE opening the
-    // transaction. The write transaction then contains only INSERTs — no reads — which
-    // keeps it short and eliminates the lock contention from 8 parallel workers each
-    // doing a SELECT inside an open write transaction.
-    let mut prev_drep_map: HashMap<String, String> = HashMap::new();
-    for event in &block.events {
-        if let GovEvent::Delegation { stake_credential, .. } = event {
-            if !prev_drep_map.contains_key(stake_credential) {
-                let prev = resolve_previous_drep(pool, stake_credential).await?;
-                prev_drep_map.insert(stake_credential.clone(), prev);
-            }
-        }
-    }
-
     let mut tx = pool.begin().await?;
 
     // Skip WAL flush wait — safe because inserts are idempotent (ON CONFLICT DO NOTHING).
@@ -526,7 +461,7 @@ pub async fn persist_parsed_block(
         .await?;
 
     for event in &block.events {
-        insert_governance_event(&mut tx, event, timestamp, epoch, slot, &mut prev_drep_map).await?;
+        insert_governance_event(&mut tx, event, timestamp, epoch, slot).await?;
     }
 
     tx.commit().await?;
