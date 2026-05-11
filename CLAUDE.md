@@ -87,15 +87,15 @@ See [reconciler-plan.md](reconciler-plan.md) for the full discrepancy inventory 
 - **Planned:** `indexer reconcile` subcommand as a gasket pipeline — Audit → Fetch (Blockfrost) → Patch
 - **K8s:** Deploy as a CronJob nightly alongside the main indexer deployment
 
-## Known Issues / Active TODOs
+## Spec-Driven Development (SDD)
 
-- `monitor/mod.rs`: RollBackward logs a warning but does NOT delete orphaned events. Shallow forks leave stale data. Needs `DELETE WHERE slot > rollback_slot`.
-- `vote_rationale` is hardcoded as `""` in every vote insert — CIP-1694 anchor on votes is never stored.
-- `metadata/mod.rs` is empty — module declaration exists but no implementation.
-- Delegation LRU cache is a global `Mutex<LruCache>` — all parallel workers contend on one lock.
-- `slot_to_timestamp()` and `slot_to_epoch()` are copy-pasted in both `scanner` and `monitor` — should live in a shared utils module.
-- DRep filter in vote insert uses `starts_with("drep-always-")` with hyphens, but `format_voter()` outputs underscores (`drep_always_abstain`) — filter is currently a no-op.
-- Nightly toolchain is a floating tag in Dockerfile. Add `rust-toolchain.toml` to pin it.
+All changes follow SDD. Read the constitution and roadmap before starting any work:
+
+- **Constitution**: [`.claude/docs/project-constitution.md`](.claude/docs/project-constitution.md) — mission, architectural principles, execution standards.
+- **Roadmap**: [`.claude/docs/roadmap.md`](.claude/docs/roadmap.md) — backlog, in-progress, and completed work.
+- **Specs**: [`.claude/docs/specs/`](.claude/docs/specs/) — one file per feature. A spec must exist before any implementation begins. Use [`.claude/docs/specs/template.md`](.claude/docs/specs/template.md) to draft new specs.
+
+Workflow: spec → failing tests → minimal implementation → verify against spec → update roadmap.
 
 ## Conventions
 

@@ -55,6 +55,7 @@ pub async fn ensure_schema(pool: &Pool<Postgres>) -> anyhow::Result<()> {
         "CREATE INDEX IF NOT EXISTS idx_drep_timeline_drep_id    ON drep_timeline_event (drep_id) WHERE drep_id IS NOT NULL",
         "CREATE INDEX IF NOT EXISTS idx_drep_timeline_drep_time  ON drep_timeline_event (drep_id, timestamp DESC) WHERE drep_id IS NOT NULL",
         "CREATE INDEX IF NOT EXISTS idx_drep_timeline_stake      ON drep_timeline_event (stake_address, slot DESC) WHERE event_type = 'delegation'",
+        "CREATE INDEX IF NOT EXISTS idx_drep_timeline_slot       ON drep_timeline_event (slot)",
         // ADD COLUMN IF NOT EXISTS for tables created by old schema without these columns
         "ALTER TABLE drep_timeline_event ADD COLUMN IF NOT EXISTS stake_address TEXT",
         "ALTER TABLE drep_timeline_event ADD COLUMN IF NOT EXISTS previous_drep TEXT",
@@ -353,7 +354,7 @@ async fn insert_governance_event(
 /// Returns a map of worker_id → last completed slot.
 pub async fn get_historical_checkpoints(
     pool: &Pool<Postgres>,
-) -> anyhow::Result<std::collections::HashMap<String, u64>> {
+) -> anyhow::Result<HashMap<String, u64>> {
     let rows = sqlx::query_as::<_, (String, i64)>(
         "SELECT worker_id, last_slot FROM sync_checkpoint WHERE worker_id LIKE 'historical_%'",
     )

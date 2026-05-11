@@ -245,6 +245,9 @@ impl Worker<ChainFollowerStage> for ChainFollowerWorker {
                     return Ok(());
                 }
 
+                let slot_to_hash: std::collections::HashMap<u64, &Vec<u8>> =
+                    headers.iter().map(|(s, h)| (*s, h)).collect();
+
                 let start = Point::Specific(headers[0].0, headers[0].1.clone());
                 let end = Point::Specific(
                     headers.last().unwrap().0,
@@ -260,6 +263,8 @@ impl Worker<ChainFollowerStage> for ChainFollowerWorker {
                         return Err(WorkerError::Restart);
                     }
                 }
+
+                let mut last_received_slot: Option<u64> = None;
 
                 loop {
                     match tokio::time::timeout(
@@ -300,6 +305,7 @@ impl Worker<ChainFollowerStage> for ChainFollowerWorker {
                                 .await
                                 .map_err(|_| WorkerError::Send)?;
 
+                            last_received_slot = Some(slot);
                             stage.blocks_followed.inc(1);
                         }
                         Ok(Ok(None)) => break, // range fully received
@@ -314,31 +320,28 @@ impl Worker<ChainFollowerStage> for ChainFollowerWorker {
                     }
                 }
 
-                // Checkpoint at the end of the batch.
-                let (last_slot, last_hash) = headers.last().unwrap();
-                let hash_hex = hex::encode(last_hash);
-                if let Err(e) =
-                    db::update_checkpoint(&stage.pool, &stage.worker_id, *last_slot, &hash_hex)
+                if let Some(slot) = last_received_slot {
+                    if let Some(hash) = slot_to_hash.get(&slot) {
+                        let hash_hex = hex::encode(hash);
+                        if let Err(e) = db::update_checkpoint(
+                            &stage.pool,
+                            &stage.worker_id,
+                            slot,
+                            &hash_hex,
+                        )
                         .await
-                {
-                    warn!("chain-follower: checkpoint update failed: {}", e);
+                        {
+                            warn!("chain-follower: checkpoint update failed: {}", e);
+                        }
+                    }
                 }
             }
 
             ChainAction::Rollback { to_slot } => {
                 warn!("chain-follower: rollback to slot {}", to_slot);
 
-                if let Err(e) = db::delete_after_slot(&stage.pool, *to_slot).await {
-                    error!("chain-follower: rollback delete failed: {}", e);
-                    return Err(WorkerError::Retry);
-                }
-
-                if let Err(e) =
-                    db::update_checkpoint_slot(&stage.pool, &stage.worker_id, *to_slot).await
-                {
-                    warn!("chain-follower: checkpoint rollback failed: {}", e);
-                }
-
+                // Delegate the actual DELETE and checkpoint update to event_sink.
+                // Doing it here too would cause two sequential full-table scans per rollback.
                 stage
                     .output
                     .send(ChainEvent::Rollback { to_slot: *to_slot })

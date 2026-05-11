@@ -35,7 +35,7 @@ pub fn build_sinks(config: &Config, pool: PgPool) -> SinkSet {
 
     if config.sinks.postgres_enabled {
         info!("sink: postgres enabled");
-        sinks.push(Arc::new(PostgresSink::new(pool)));
+        sinks.push(Arc::new(PostgresSink::new(pool, "continuous")));
     }
 
     if config.sinks.webhook_enabled {

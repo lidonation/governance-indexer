@@ -8,11 +8,12 @@ use crate::sinks::EventSink;
 
 pub struct PostgresSink {
     pool: PgPool,
+    worker_id: String,
 }
 
 impl PostgresSink {
-    pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+    pub fn new(pool: PgPool, worker_id: impl Into<String>) -> Self {
+        Self { pool, worker_id: worker_id.into() }
     }
 }
 
@@ -27,6 +28,7 @@ impl EventSink for PostgresSink {
         if deleted > 0 {
             error!("postgres-sink: rollback deleted {} events after slot {}", deleted, to_slot);
         }
+        db::update_checkpoint_slot(&self.pool, &self.worker_id, to_slot).await?;
         Ok(())
     }
 }
