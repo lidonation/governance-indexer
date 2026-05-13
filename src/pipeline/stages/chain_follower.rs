@@ -70,6 +70,7 @@ pub struct ChainFollowerWorker {
     chainsync_peer: Option<PeerClient>,
     blockfetch_peer: Option<PeerClient>,
     at_tip: bool,
+    intersection_slot: u64,
     // A rollback received mid-batch is stored here and emitted on the next schedule() call,
     // after the in-flight batch has been flushed.
     pending_rollback: Option<u64>,
@@ -142,12 +143,18 @@ impl Worker<ChainFollowerStage> for ChainFollowerWorker {
             .await
             .or_restart()?;
 
+        let intersection_slot = match &intersection.0 {
+            Some(Point::Specific(s, _)) => *s,
+            _ => 0,
+        };
+
         info!("chain-follower: intersection at {:?}", intersection);
 
         Ok(ChainFollowerWorker {
             chainsync_peer: Some(cs_peer),
             blockfetch_peer: Some(bf_peer),
             at_tip: false,
+            intersection_slot,
             pending_rollback: None,
         })
     }
@@ -208,6 +215,10 @@ impl Worker<ChainFollowerStage> for ChainFollowerWorker {
                         Point::Specific(s, _) => *s,
                         Point::Origin => 0,
                     };
+
+                    if to_slot == self.intersection_slot && batch.is_empty() {
+                        continue;
+                    }
                     if batch.is_empty() {
                         return Ok(WorkSchedule::Unit(ChainAction::Rollback { to_slot }));
                     } else {
