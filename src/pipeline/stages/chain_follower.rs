@@ -71,8 +71,7 @@ pub struct ChainFollowerWorker {
     blockfetch_peer: Option<PeerClient>,
     at_tip: bool,
     intersection_slot: u64,
-    // A rollback received mid-batch is stored here and emitted on the next schedule() call,
-    // after the in-flight batch has been flushed.
+    must_reply: bool,
     pending_rollback: Option<u64>,
 }
 
@@ -123,9 +122,6 @@ impl Worker<ChainFollowerStage> for ChainFollowerWorker {
     async fn bootstrap(stage: &ChainFollowerStage) -> Result<Self, WorkerError> {
         let (mut cs_peer, bf_peer) = Self::connect(stage).await.or_restart()?;
 
-        // On reconnect, resume from the latest DB checkpoint rather than the original
-        // start_point. Without this, every connection drop replays from the beginning
-        // of continuous sync instead of the last persisted slot.
         let resume_point = match db::get_checkpoint(&stage.pool, &stage.worker_id).await {
             Ok(Some((slot, hash_hex))) => match hex::decode(&hash_hex) {
                 Ok(hash) => {
@@ -155,13 +151,11 @@ impl Worker<ChainFollowerStage> for ChainFollowerWorker {
             blockfetch_peer: Some(bf_peer),
             at_tip: false,
             intersection_slot,
+            must_reply: false,
             pending_rollback: None,
         })
     }
 
-    /// Collect up to BATCH_SIZE block headers from chainsync, then return the batch.
-    /// This lets execute() use request_range for the whole batch instead of fetch_single
-    /// per block, which is critical for catch-up when the chain follower is many blocks behind.
     async fn schedule(
         &mut self,
         stage: &mut ChainFollowerStage,
@@ -174,20 +168,32 @@ impl Worker<ChainFollowerStage> for ChainFollowerWorker {
         let mut batch: Vec<(u64, Vec<u8>)> = Vec::with_capacity(BATCH_SIZE);
 
         loop {
-            let next = match tokio::time::timeout(
-                Duration::from_secs(60),
-                self.chainsync_peer.as_mut().unwrap().chainsync().request_next(),
-            )
-            .await
-            {
-                Ok(Ok(n)) => n,
-                Ok(Err(e)) => {
-                    warn!("chain-follower: request_next error: {}", e);
-                    return Err(WorkerError::Restart);
+            let cs = self.chainsync_peer.as_mut().unwrap().chainsync();
+            let next = if self.must_reply {
+                match tokio::time::timeout(Duration::from_secs(120), cs.recv_while_must_reply())
+                    .await
+                {
+                    Ok(Ok(n)) => { self.must_reply = false; n }
+                    Ok(Err(e)) => {
+                        warn!("chain-follower: recv error after Await: {}", e);
+                        return Err(WorkerError::Restart);
+                    }
+                    Err(_) => {
+                        warn!("chain-follower: no block from relay in 120s — reconnecting");
+                        return Err(WorkerError::Restart);
+                    }
                 }
-                Err(_) => {
-                    warn!("chain-follower: request_next timed out");
-                    return Err(WorkerError::Restart);
+            } else {
+                match tokio::time::timeout(Duration::from_secs(60), cs.request_next()).await {
+                    Ok(Ok(n)) => n,
+                    Ok(Err(e)) => {
+                        warn!("chain-follower: request_next error: {}", e);
+                        return Err(WorkerError::Restart);
+                    }
+                    Err(_) => {
+                        warn!("chain-follower: request_next timed out");
+                        return Err(WorkerError::Restart);
+                    }
                 }
             };
 
@@ -205,7 +211,6 @@ impl Worker<ChainFollowerStage> for ChainFollowerWorker {
                         }
                         Err(e) => {
                             warn!("chain-follower: header decode failed: {}", e);
-                            // Skip — likely a Byron-era edge case. Continue collecting.
                         }
                     }
                 }
@@ -222,7 +227,6 @@ impl Worker<ChainFollowerStage> for ChainFollowerWorker {
                     if batch.is_empty() {
                         return Ok(WorkSchedule::Unit(ChainAction::Rollback { to_slot }));
                     } else {
-                        // Flush the batch first; store rollback for the next schedule() call.
                         self.pending_rollback = Some(to_slot);
                         return Ok(WorkSchedule::Unit(ChainAction::ForwardBatch(batch)));
                     }
@@ -233,11 +237,11 @@ impl Worker<ChainFollowerStage> for ChainFollowerWorker {
                         self.at_tip = true;
                         info!("chain-follower: REACHED TIP — now following chain in real-time");
                     }
+
+                    self.must_reply = true;
                     if batch.is_empty() {
-                        tokio::time::sleep(Duration::from_secs(stage.interval_secs)).await;
                         return Ok(WorkSchedule::Idle);
                     } else {
-                        // Flush the partial batch before sleeping.
                         return Ok(WorkSchedule::Unit(ChainAction::ForwardBatch(batch)));
                     }
                 }
