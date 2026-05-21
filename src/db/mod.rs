@@ -46,8 +46,8 @@ pub async fn ensure_schema(pool: &Pool<Postgres>) -> anyhow::Result<()> {
             last_hash   TEXT         NOT NULL,
             updated_at  TIMESTAMPTZ  NOT NULL DEFAULT now()
         )"#,
-        // Idempotency constraint
-        "CREATE UNIQUE INDEX IF NOT EXISTS uniq_drep_timeline_tx_event ON drep_timeline_event (tx_hash, tx_index)",
+        // Idempotency constraint — 3-column to allow same tx to carry both delegation + undelegation
+        "CREATE UNIQUE INDEX IF NOT EXISTS uniq_drep_timeline_tx_event_type ON drep_timeline_event (tx_hash, tx_index, event_type)",
         // Query indexes
         "CREATE INDEX IF NOT EXISTS idx_drep_timeline_type      ON drep_timeline_event (event_type)",
         "CREATE INDEX IF NOT EXISTS idx_drep_timeline_timestamp  ON drep_timeline_event (timestamp DESC)",
@@ -153,7 +153,7 @@ async fn insert_governance_event(
                 INSERT INTO drep_timeline_event (
                     event_type, timestamp, epoch, slot, tx_hash, tx_index, drep_id, metadata, stake_address, previous_drep
                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-                ON CONFLICT (tx_hash, tx_index) DO NOTHING
+                ON CONFLICT (tx_hash, tx_index, event_type) DO NOTHING
                 "#,
             )
             .bind("registration")
@@ -187,7 +187,7 @@ async fn insert_governance_event(
                 INSERT INTO drep_timeline_event (
                     event_type, timestamp, epoch, slot, tx_hash, tx_index, drep_id, metadata, stake_address, previous_drep
                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-                ON CONFLICT (tx_hash, tx_index) DO NOTHING
+                ON CONFLICT (tx_hash, tx_index, event_type) DO NOTHING
                 "#,
             )
             .bind("retirement")
@@ -228,7 +228,7 @@ async fn insert_governance_event(
                 INSERT INTO drep_timeline_event (
                     event_type, timestamp, epoch, slot, tx_hash, tx_index, drep_id, metadata, stake_address, previous_drep
                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-                ON CONFLICT (tx_hash, tx_index) DO NOTHING
+                ON CONFLICT (tx_hash, tx_index, event_type) DO NOTHING
                 "#,
             )
             .bind("delegation")
@@ -272,7 +272,7 @@ async fn insert_governance_event(
                 INSERT INTO drep_timeline_event (
                     event_type, timestamp, epoch, slot, tx_hash, tx_index, drep_id, metadata, stake_address, previous_drep
                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-                ON CONFLICT (tx_hash, tx_index) DO NOTHING
+                ON CONFLICT (tx_hash, tx_index, event_type) DO NOTHING
                 "#,
             )
             .bind("proposal")
@@ -329,7 +329,7 @@ async fn insert_governance_event(
                 INSERT INTO drep_timeline_event (
                     event_type, timestamp, epoch, slot, tx_hash, tx_index, drep_id, metadata, stake_address, previous_drep
                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-                ON CONFLICT (tx_hash, tx_index) DO NOTHING
+                ON CONFLICT (tx_hash, tx_index, event_type) DO NOTHING
                 "#,
             )
             .bind("vote")
@@ -440,7 +440,7 @@ pub async fn get_stats(pool: &Pool<Postgres>) -> Result<DbStats, anyhow::Error> 
 }
 
 /// Persist all governance events from a parsed block in a single transaction.
-/// Idempotent — ON CONFLICT DO NOTHING on (tx_hash, tx_index).
+/// Idempotent — ON CONFLICT DO NOTHING on (tx_hash, tx_index, event_type).
 pub async fn persist_parsed_block(
     pool: &Pool<Postgres>,
     block: &ParsedBlock,
